@@ -58,6 +58,82 @@ export async function getSeasonContext(
   return { seasonId, uniqueGameIds };
 }
 
+// ── Available seasons list ───────────────────────────────────────────────────
+
+export interface AvailableSeason {
+  seasonId: string;
+  label: string;
+  seasonYear: number;
+}
+
+/**
+ * Return all seasons available for the team, sorted newest-first.
+ *
+ * Uses the authenticated Hudl API endpoint:
+ *   GET /api/v2/teams/{teamId}/seasons
+ * which returns an array of objects with shape { linkId, name, ... }.
+ * `linkId` is the season ID used in all other report API calls.
+ *
+ * Falls back to redirect-URL discovery if the API call fails.
+ */
+export async function listAvailableSeasons(
+  page: Page,
+  teamId: string
+): Promise<AvailableSeason[]> {
+  // The API endpoint is authenticated via the browser session cookies, so we
+  // call it from within the page context using fetch() with credentials.
+  console.error('[seasons] Fetching season list from /api/v2/teams endpoint...');
+
+  // We need an active page with valid session — navigate to the reports page
+  // first so the authenticated session is applied, then call the API.
+  await page.goto(`https://www.hudl.com/reports/teams/${teamId}`, {
+    waitUntil: 'networkidle',
+    timeout: 30000,
+  });
+
+  const apiUrl = `https://www.hudl.com/api/v2/teams/${teamId}/seasons`;
+  const raw = await page.evaluate(async (url: string) => {
+    try {
+      const res = await fetch(url, { credentials: 'include' });
+      if (!res.ok) return null;
+      return res.json();
+    } catch {
+      return null;
+    }
+  }, apiUrl);
+
+  if (!raw || !Array.isArray(raw)) {
+    console.error('[seasons] API returned no data — falling back to redirect URL');
+    const url = new URL(page.url());
+    const seasonId = url.searchParams.get('S') ?? '';
+    return seasonId
+      ? [{ seasonId, label: 'Current Season', seasonYear: new Date().getFullYear() }]
+      : [];
+  }
+
+  // The endpoint returns a mix of season entries AND individual game entries.
+  // Season entries have a name matching the pattern "YYYY-YYYY Season"
+  // (e.g. "2025-2026 Season"). Game entries have opponent-based names
+  // (e.g. "vs Century High School"). We filter to seasons only.
+  const SEASON_NAME_RE = /^\d{4}-\d{4}\s+Season$/i;
+
+  const seasons: AvailableSeason[] = (raw as Record<string, unknown>[])
+    .filter((item) => SEASON_NAME_RE.test(String(item['name'] ?? '')))
+    .map((item) => {
+      const seasonId = String(item['linkId'] ?? '');
+      const label    = String(item['name']   ?? '');
+      // Extract the start year from "YYYY-YYYY Season"
+      const yearMatch = label.match(/^(\d{4})-\d{4}/);
+      const seasonYear = yearMatch ? parseInt(yearMatch[1], 10) : 0;
+      return { seasonId, label, seasonYear };
+    })
+    .filter((s) => s.seasonId !== '')
+    .sort((a, b) => b.seasonYear - a.seasonYear); // newest first
+
+  console.error(`[seasons] Found ${seasons.length} seasons (${seasons[seasons.length - 1]?.label} → ${seasons[0]?.label})`);
+  return seasons;
+}
+
 // ── CSV download via Export button ──────────────────────────────────────────
 
 export type ReportGrouping = 'OVERALL' | 'PLAYER' | 'GAME';

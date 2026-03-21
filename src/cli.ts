@@ -15,6 +15,7 @@ import { scrapeRoster } from './scrapers/rosterScraper.js';
 import { scrapePlayerStats } from './scrapers/playerStatsScraper.js';
 import { scrapeTeamStats } from './scrapers/teamStatsScraper.js';
 import { scrapeGameResults } from './scrapers/gameResultsScraper.js';
+import { listAvailableSeasons } from './fetchers/reportsCsvFetcher.js';
 import type { SessionState } from './types.js';
 
 // ── Readline helpers ──────────────────────────────────────────────────────────
@@ -67,6 +68,7 @@ function printMenu(): void {
   console.log('  4.  Get Team Stats');
   console.log('  5.  Get Game Results');
   console.log('  6.  Get Game Results (limited)');
+  console.log('  7.  [DISCOVERY] List Available Seasons');
   console.log('  0.  Exit');
   console.log(line());
 }
@@ -181,6 +183,28 @@ async function runGameResults(
   return s;
 }
 
+async function runDiscoverSeasons(session: SessionState | null, config: ReturnType<typeof loadConfig>) {
+  console.log('\nFetching available seasons from Hudl...');
+  const { page, session: s } = await ensureAuthenticated(session, config);
+  const seasons = await listAvailableSeasons(page, config.teamId);
+
+  console.log('\n' + line('═'));
+  console.log('  AVAILABLE SEASONS');
+  console.log(line('═'));
+
+  if (seasons.length === 0) {
+    console.log('\n  (no seasons found)');
+  } else {
+    console.log(`\n  ${seasons.length} seasons found (newest first):\n`);
+    printTable(seasons as unknown as Record<string, unknown>[], ['seasonId', 'seasonYear', 'label']);
+    console.log('\n  Tip: pass the seasonId to get_player_stats, get_team_stats, or get_game_results');
+    console.log('  Example: get_player_stats({ season: "1128302" })  → 2019-2020 Season');
+  }
+
+  console.log('\n' + line('═'));
+  return s;
+}
+
 // ── Main loop ─────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
@@ -225,6 +249,10 @@ async function main(): Promise<void> {
           session = await runGameResults(session, config, isNaN(limit) ? 5 : limit);
           break;
         }
+
+        case '7':
+          session = await runDiscoverSeasons(session, config);
+          break;
 
         case '0':
           console.log('\nClosing browser and exiting...');

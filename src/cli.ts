@@ -15,6 +15,7 @@ import { scrapeRoster } from './scrapers/rosterScraper.js';
 import { scrapePlayerStats } from './scrapers/playerStatsScraper.js';
 import { scrapeTeamStats } from './scrapers/teamStatsScraper.js';
 import { scrapeGameResults } from './scrapers/gameResultsScraper.js';
+import { scrapeGameStats }   from './scrapers/gameStatsScraper.js';
 import { listAvailableSeasons } from './fetchers/reportsCsvFetcher.js';
 import type { SessionState } from './types.js';
 
@@ -69,6 +70,7 @@ function printMenu(): void {
   console.log('  5.  Get Game Results');
   console.log('  6.  Get Game Results (limited)');
   console.log('  7.  [DISCOVERY] List Available Seasons');
+  console.log('  8.  Get Single-Game Stats');
   console.log('  0.  Exit');
   console.log(line());
 }
@@ -211,6 +213,59 @@ async function runDiscoverSeasons(session: SessionState | null, config: ReturnTy
   return s;
 }
 
+async function runGameStats(
+  session: SessionState | null,
+  config: ReturnType<typeof loadConfig>,
+  gameIdentifier: string,
+  seasonId?: string,
+) {
+  console.log(`\nFetching single-game stats (game: "${gameIdentifier}")...`);
+  const { page, session: s } = await ensureAuthenticated(session, config);
+  const result = await scrapeGameStats(page, s, config.teamId, (updated) => {
+    saveSession(updated);
+  }, gameIdentifier, seasonId);
+
+  if (!result) {
+    console.log('\n  (no data returned — check season ID and game identifier)');
+    return s;
+  }
+
+  const homeAway = result.homeAway === 'home' ? 'vs' : '@';
+  console.log(`\nSingle-Game Stats — ${result.date} ${homeAway} ${result.opponent}`);
+  console.log(`  Result:   ${result.result}  ${result.teamScore}–${result.opponentScore}`);
+  console.log(`  Season:   ${result.seasonId}`);
+  console.log(`  Game ID:  ${result.uniqueGameId}`);
+  console.log(`  Players:  ${result.players.length}\n`);
+
+  // Offense
+  const scorers = result.players.filter(p => p.goals > 0 || p.assists > 0);
+  console.log('── Scoring ──');
+  printTable(
+    (scorers.length > 0 ? scorers : result.players) as unknown as Record<string, unknown>[],
+    ['number', 'name', 'goals', 'assists', 'points', 'shots', 'shotsOnTarget', 'shotPct'],
+  );
+
+  // Face-offs
+  const foPlayers = result.players.filter(p => p.faceoffs > 0);
+  if (foPlayers.length > 0) {
+    console.log('\n── Face-Offs ──');
+    printTable(foPlayers as unknown as Record<string, unknown>[], [
+      'number', 'name', 'faceoffs', 'faceoffWins', 'faceoffLosses', 'faceoffPct',
+    ]);
+  }
+
+  // Goalies
+  const goalies = result.players.filter(p => p.saves > 0 || p.goalsAllowed > 0);
+  if (goalies.length > 0) {
+    console.log('\n── Goalies ──');
+    printTable(goalies as unknown as Record<string, unknown>[], [
+      'number', 'name', 'saves', 'goalsAllowed', 'savePct',
+    ]);
+  }
+
+  return s;
+}
+
 // ── Main loop ─────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
@@ -267,6 +322,13 @@ async function main(): Promise<void> {
         case '7':
           session = await runDiscoverSeasons(session, config);
           break;
+
+        case '8': {
+          const s8 = (await ask('  Season ID (leave blank for current): ')).trim();
+          const gi = (await ask('  Game ("latest", opponent name, date, or 0-based index): ')).trim();
+          session = await runGameStats(session, config, gi || 'latest', s8 || undefined);
+          break;
+        }
 
         case '0':
           console.log('\nClosing browser and exiting...');

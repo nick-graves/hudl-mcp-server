@@ -34,7 +34,7 @@ DARK_GRAY  = colors.HexColor("#444444")
 title_style = ParagraphStyle(
     "ReportTitle",
     parent=styles["Title"],
-    fontSize=20,
+    fontSize=17,
     textColor=BLACK,
     spaceAfter=4,
     alignment=TA_CENTER,
@@ -164,9 +164,11 @@ story = []
 story.append(spacer(4))
 logo = Image(LOGO_PATH, width=1.6*inch, height=1.0*inch)
 header_data = [[logo, [
-    Paragraph("ALOHA HIGH SCHOOL LACROSSE", title_style),
-    Paragraph("Warrior Hawks &nbsp;|&nbsp; 2025–2026 Season Report", subtitle_style),
+    Paragraph("ALOHA-SOUTHRIDGE WARRIOR HAWKS", title_style),
+    Paragraph("2025–2026 Season Report", subtitle_style),
     Paragraph("Through 2 Games &nbsp;&nbsp;&#9679;&nbsp;&nbsp; Record: 1-1 &nbsp;&nbsp;&#9679;&nbsp;&nbsp; GF: 8 &nbsp;&nbsp;&#9679;&nbsp;&nbsp; GA: 17", subtitle_style),
+    Spacer(1, 4),
+    Paragraph("<b>Head Coach:</b> Jake Pruit &nbsp;&nbsp;&#9679;&nbsp;&nbsp; <b>Assistant Coaches:</b> Ted Hanna, Scott Staul, Trevor Yarnell", subtitle_style),
 ]]]
 header_table = Table(header_data, colWidths=[1.8*inch, 5.4*inch])
 header_table.setStyle(TableStyle([
@@ -418,7 +420,7 @@ story.append(body(
 story.append(spacer(12))
 story.append(HRFlowable(width="100%", thickness=2, color=RED, spaceAfter=2))
 story.append(HRFlowable(width="100%", thickness=1.5, color=BLUE, spaceAfter=6))
-story.append(Paragraph("Aloha High School Lacrosse &nbsp;|&nbsp; 2025–2026 Season &nbsp;|&nbsp; Generated via Hudl MCP Server",
+story.append(Paragraph("Aloha-Southridge Warrior Hawks &nbsp;|&nbsp; 2025–2026 Season &nbsp;|&nbsp; Generated via Hudl MCP Server",
     ParagraphStyle("Footer", parent=styles["Normal"], fontSize=7, textColor=colors.gray, alignment=TA_CENTER)))
 
 # ── Build ─────────────────────────────────────────────────────────────────────

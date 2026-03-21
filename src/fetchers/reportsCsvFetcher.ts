@@ -160,6 +160,13 @@ export async function getSeasonContext(
 
   if (events.length > 0) {
     console.error('[season-ctx] Event object keys:', Object.keys(events[0]).join(', '));
+    const sample = events.slice(0, 3).map(e => ({
+      uniqueGameId:  e['uniqueGameId'],
+      datePlayed:    e['datePlayed'],
+      dateScheduled: e['dateScheduled'],
+      name:          e['name'],
+    }));
+    console.error('[season-ctx] Sample event date values:', JSON.stringify(sample, null, 2));
   }
 
   const uniqueGameIds = events
@@ -171,12 +178,14 @@ export async function getSeasonContext(
     .map(e => ({
       uniqueGameId: String(e['uniqueGameId']),
       date: String(
+        e['datePlayed'] ?? e['dateScheduled'] ??
         e['eventDate'] ?? e['date'] ?? e['gameDate'] ??
         e['startDate'] ?? e['scheduledDate'] ?? ''
       ) || undefined,
     }));
 
   console.error(`[season-ctx] Resolved ${uniqueGameIds.length} uniqueGameIds`);
+  console.error(`[season-ctx] Events with dates: ${gameEvents.filter(e => e.date).length} of ${gameEvents.length}`);
   return { seasonId: resolvedId, uniqueGameIds, gameEvents };
 }
 

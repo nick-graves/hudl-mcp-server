@@ -70,8 +70,23 @@ export async function scrapeGameStats(
   // gameIdentifier resolution order:
   //   "latest" | "0"   → index 0  (most recent)
   //   pure number       → 0-based index newest-first, clamped to list length
-  //   string            → opponent partial match first, then date partial match
+  //   string            → opponent partial match first, then date partial match,
+  //                       then fuzzy opponent match (tolerates minor spelling diffs)
   let targetIndex = 0;
+
+  // ── Fuzzy match helper (Levenshtein distance) ────────────────────────────────
+  function levenshtein(a: string, b: string): number {
+    const m = a.length, n = b.length;
+    const dp: number[][] = Array.from({ length: m + 1 }, (_, i) =>
+      Array.from({ length: n + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0))
+    );
+    for (let i = 1; i <= m; i++)
+      for (let j = 1; j <= n; j++)
+        dp[i][j] = a[i-1] === b[j-1]
+          ? dp[i-1][j-1]
+          : 1 + Math.min(dp[i-1][j], dp[i][j-1], dp[i-1][j-1]);
+    return dp[m][n];
+  }
 
   if (gameIdentifier === 'latest') {
     targetIndex = 0;
@@ -103,7 +118,34 @@ export async function scrapeGameStats(
         `[game-stats] Matched "${gameIdentifier}" → ${allGames[byDate].date} vs ${allGames[byDate].opponent}`
       );
     } else {
-      console.error(`[game-stats] No match for "${gameIdentifier}" — defaulting to most recent game`);
+      // ── Fuzzy fallback: find closest opponent name by Levenshtein distance ──
+      const fuzzyThreshold = Math.max(2, Math.floor(lower.length * 0.25)); // allow ~25% edit distance
+      let bestIdx  = -1;
+      let bestDist = Infinity;
+
+      for (let i = 0; i < allGames.length; i++) {
+        const opponentLower = allGames[i].opponent.toLowerCase();
+        // Also try matching the query against each word of the opponent name
+        const dist = Math.min(
+          levenshtein(lower, opponentLower),
+          ...opponentLower.split(/\s+/).map(word => levenshtein(lower, word))
+        );
+        if (dist < bestDist) { bestDist = dist; bestIdx = i; }
+      }
+
+      if (bestIdx !== -1 && bestDist <= fuzzyThreshold) {
+        targetIndex = bestIdx;
+        console.error(
+          `[game-stats] Fuzzy matched "${gameIdentifier}" → vs ${allGames[bestIdx].opponent} on ${allGames[bestIdx].date} (edit distance: ${bestDist})`
+        );
+      } else {
+        // No match at all — return null with helpful diagnostics
+        const available = allGames.map(g => `  ${g.date} vs ${g.opponent}`).join('\n');
+        console.error(
+          `[game-stats] No match for "${gameIdentifier}". Available games this season:\n${available}`
+        );
+        return null;
+      }
     }
   }
 

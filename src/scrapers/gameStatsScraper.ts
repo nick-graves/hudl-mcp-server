@@ -156,22 +156,64 @@ export async function scrapeGameStats(
   );
 
   // ── 4. Map target game → uniqueGameId ───────────────────────────────────────
-  // uniqueGameIds are in the order returned by Hudl's events API, which is
-  // approximately chronological (oldest first) by numeric prefix.
-  // allGames is newest-first.  Sorting uniqueGameIds by numeric prefix descending
-  // produces a newest-first list that aligns with allGames in the vast majority
-  // of cases.  A diagnostic log records the chosen ID so manual verification
-  // is straightforward.
-  const idsNewestFirst = [...ctx.uniqueGameIds].sort((a, b) => {
-    const nA = parseInt(a.split('-')[0], 10) || 0;
-    const nB = parseInt(b.split('-')[0], 10) || 0;
-    return nB - nA;          // descending → newest first
-  });
+  // Strategy A: if the events API returned date metadata, match by date directly.
+  // Strategy B: fall back to numeric-prefix sort (approximate, may be wrong).
+  let chosenId: string | undefined;
 
-  const chosenId = idsNewestFirst[targetIndex];
+  const eventsWithDates = (ctx.gameEvents ?? []).filter(e => e.date);
+
+  if (eventsWithDates.length > 0) {
+    // Parse "Apr 4" style date (no year) into month+day for comparison
+    const MONTHS: Record<string, number> = {
+      jan:1, feb:2, mar:3, apr:4, may:5, jun:6,
+      jul:7, aug:8, sep:9, oct:10, nov:11, dec:12,
+    };
+    function parseShortDate(s: string): { month: number; day: number } | null {
+      const m = s.trim().match(/^(\w{3,})\s+(\d{1,2})$/i);
+      if (!m) return null;
+      const month = MONTHS[m[1].toLowerCase().slice(0, 3)];
+      return month ? { month, day: parseInt(m[2], 10) } : null;
+    }
+
+    const targetParsed = parseShortDate(targetGame.date);
+
+    if (targetParsed) {
+      const match = eventsWithDates.find(e => {
+        const d = new Date(e.date!);
+        if (isNaN(d.getTime())) return false;
+        return d.getMonth() + 1 === targetParsed.month &&
+               d.getDate()       === targetParsed.day;
+      });
+
+      if (match) {
+        chosenId = match.uniqueGameId;
+        console.error(
+          `[game-stats] Date-matched uniqueGameId ${chosenId} for ${targetGame.date} vs ${targetGame.opponent}`
+        );
+      } else {
+        console.error(
+          `[game-stats] Date match failed for "${targetGame.date}" — events have dates: ` +
+          eventsWithDates.slice(0, 5).map(e => e.date).join(', ')
+        );
+      }
+    }
+  }
 
   if (!chosenId) {
-    console.error(`[game-stats] Could not resolve uniqueGameId for index ${targetIndex} (have ${idsNewestFirst.length} IDs)`);
+    // Strategy B: sort uniqueGameIds by numeric prefix descending (newest first)
+    // and align with the game results list by index.  This is approximate and
+    // can fail when event IDs are non-sequential — date matching above is preferred.
+    console.error('[game-stats] Falling back to numeric-prefix index alignment');
+    const idsNewestFirst = [...ctx.uniqueGameIds].sort((a, b) => {
+      const nA = parseInt(a.split('-')[0], 10) || 0;
+      const nB = parseInt(b.split('-')[0], 10) || 0;
+      return nB - nA;
+    });
+    chosenId = idsNewestFirst[targetIndex];
+  }
+
+  if (!chosenId) {
+    console.error(`[game-stats] Could not resolve uniqueGameId for index ${targetIndex} (have ${ctx.uniqueGameIds.length} IDs)`);
     return null;
   }
 

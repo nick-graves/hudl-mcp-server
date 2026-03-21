@@ -7,6 +7,7 @@ import { scrapeTeamStats } from './scrapers/teamStatsScraper.js';
 import { scrapePlayerStats } from './scrapers/playerStatsScraper.js';
 import { scrapeGameResults } from './scrapers/gameResultsScraper.js';
 import { scrapeRoster } from './scrapers/rosterScraper.js';
+import { scrapeGameStats } from './scrapers/gameStatsScraper.js';
 import { listAvailableSeasons } from './fetchers/reportsCsvFetcher.js';
 
 export function createServer(config: HudlConfig): McpServer {
@@ -196,6 +197,57 @@ export function createServer(config: HudlConfig): McpServer {
           {
             type: 'text',
             text: JSON.stringify(seasons, null, 2),
+          },
+        ],
+      };
+    }
+  );
+
+  // ── get_game_stats ─────────────────────────────────────────────────────────
+  server.registerTool(
+    'get_game_stats',
+    {
+      description:
+        'Get per-game player statistics for a single specified game: goals, assists, shots, ' +
+        'saves, faceoffs, and turnovers for every player, filtered to that one game only. ' +
+        'Use the game parameter to identify which game: "latest" returns the most recent game, ' +
+        'an opponent name (e.g. "Beaverton") returns the most recent game vs that opponent, ' +
+        'a date string (e.g. "May 18") targets that specific game, or a numeric index ' +
+        '(0 = most recent, 1 = second most recent, etc.) selects by position. ' +
+        'If an opponent was played multiple times in the season, a warning is logged and the ' +
+        'most recent match is returned — use a date or index to select a specific game.',
+      inputSchema: {
+        game: z
+          .string()
+          .optional()
+          .describe(
+            'Game identifier: "latest" (default), opponent name, date (e.g. "May 18"), ' +
+            'or 0-based index newest-first. Use a date when the same opponent appears multiple times.'
+          ),
+        season: z
+          .string()
+          .optional()
+          .describe('Season identifier. Defaults to current season.'),
+      },
+    },
+    async ({ game, season }) => {
+      const { page, session: freshSession } = await ensureAuthenticated(session, config);
+      session = freshSession;
+
+      const result = await scrapeGameStats(
+        page,
+        session,
+        config.teamId,
+        onSessionUpdate,
+        game ?? 'latest',
+        season,
+      );
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: result ? JSON.stringify(result, null, 2) : 'No data found for the specified game.',
           },
         ],
       };

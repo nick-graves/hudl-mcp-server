@@ -137,6 +137,7 @@ export async function getSeasonContext(
       .map(e => ({
         uniqueGameId: String(e['uniqueGameId']),
         date: String(
+          e['datePlayed'] ?? e['dateScheduled'] ??
           e['eventDate'] ?? e['date'] ?? e['gameDate'] ??
           e['startDate'] ?? e['scheduledDate'] ?? ''
         ) || undefined,

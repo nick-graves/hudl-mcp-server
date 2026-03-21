@@ -120,7 +120,7 @@ export function createServer(config: HudlConfig): McpServer {
           .describe('Maximum number of games to return. Omit for all games.'),
       },
     },
-    async ({ limit }) => {
+    async ({ limit, season }) => {
       const { page, session: freshSession } = await ensureAuthenticated(session, config);
       session = freshSession;
 
@@ -129,7 +129,8 @@ export function createServer(config: HudlConfig): McpServer {
         session,
         config.teamId,
         onSessionUpdate,
-        limit
+        limit,
+        season
       );
 
       return {

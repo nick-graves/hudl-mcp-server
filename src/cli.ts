@@ -172,13 +172,14 @@ async function runTeamStats(
 async function runGameResults(
   session: SessionState | null,
   config: ReturnType<typeof loadConfig>,
-  limit?: number
+  limit?: number,
+  seasonId?: string
 ) {
   console.log('\nFetching game results...');
   const { page, session: s } = await ensureAuthenticated(session, config);
   const games = await scrapeGameResults(page, s, config.teamId, (updated) => {
     saveSession(updated);
-  }, limit);
+  }, limit, seasonId);
 
   const label = limit ? `Last ${limit} Games` : 'All Game Results';
   console.log(`\n${label}\n`);
@@ -249,14 +250,17 @@ async function main(): Promise<void> {
           break;
         }
 
-        case '5':
-          session = await runGameResults(session, config);
+        case '5': {
+          const s5 = (await ask('  Season ID (leave blank for current): ')).trim();
+          session = await runGameResults(session, config, undefined, s5 || undefined);
           break;
+        }
 
         case '6': {
+          const s6 = (await ask('  Season ID (leave blank for current): ')).trim();
           const n = await ask('  How many games? ');
           const limit = parseInt(n.trim(), 10);
-          session = await runGameResults(session, config, isNaN(limit) ? 5 : limit);
+          session = await runGameResults(session, config, isNaN(limit) ? 5 : limit, s6 || undefined);
           break;
         }
 

@@ -90,13 +90,14 @@ async function runRoster(session: SessionState | null, config: ReturnType<typeof
 async function runPlayerStats(
   session: SessionState | null,
   config: ReturnType<typeof loadConfig>,
-  nameFilter?: string
+  nameFilter?: string,
+  seasonId?: string
 ) {
   console.log('\nFetching player stats...');
   const { page, session: s } = await ensureAuthenticated(session, config);
   const players = await scrapePlayerStats(page, s, config.teamId, (updated) => {
     saveSession(updated);
-  }, nameFilter);
+  }, nameFilter, seasonId);
 
   const label = nameFilter ? `Player Stats — filter: "${nameFilter}"` : 'Player Stats — All Players';
   console.log(`\n${label} (sorted by points)\n`);
@@ -142,12 +143,16 @@ async function runPlayerStats(
   return s;
 }
 
-async function runTeamStats(session: SessionState | null, config: ReturnType<typeof loadConfig>) {
+async function runTeamStats(
+  session: SessionState | null,
+  config: ReturnType<typeof loadConfig>,
+  seasonId?: string
+) {
   console.log('\nFetching team stats...');
   const { page, session: s } = await ensureAuthenticated(session, config);
   const stats = await scrapeTeamStats(page, s, config.teamId, (updated) => {
     saveSession(updated);
-  });
+  }, seasonId);
 
   console.log('\nTeam Stats\n');
   console.log(`  Season:          ${stats.season}`);
@@ -225,19 +230,24 @@ async function main(): Promise<void> {
           session = await runRoster(session, config);
           break;
 
-        case '2':
-          session = await runPlayerStats(session, config);
-          break;
-
-        case '3': {
-          const name = await ask('  Enter player name to search: ');
-          session = await runPlayerStats(session, config, name.trim());
+        case '2': {
+          const s2 = (await ask('  Season ID (leave blank for current): ')).trim();
+          session = await runPlayerStats(session, config, undefined, s2 || undefined);
           break;
         }
 
-        case '4':
-          session = await runTeamStats(session, config);
+        case '3': {
+          const name = await ask('  Enter player name to search: ');
+          const s3 = (await ask('  Season ID (leave blank for current): ')).trim();
+          session = await runPlayerStats(session, config, name.trim(), s3 || undefined);
           break;
+        }
+
+        case '4': {
+          const s4 = (await ask('  Season ID (leave blank for current): ')).trim();
+          session = await runTeamStats(session, config, s4 || undefined);
+          break;
+        }
 
         case '5':
           session = await runGameResults(session, config);

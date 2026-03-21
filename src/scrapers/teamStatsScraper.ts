@@ -6,9 +6,10 @@ export async function scrapeTeamStats(
   page: Page,
   _session: SessionState,
   teamId: string,
-  _onSessionUpdate: (s: SessionState) => void
+  _onSessionUpdate: (s: SessionState) => void,
+  seasonId?: string
 ): Promise<TeamStats> {
-  const ctx = await getSeasonContext(page, teamId);
+  const ctx = await getSeasonContext(page, teamId, seasonId);
   const gameParam = ctx.uniqueGameIds.join(',');
   const periods = 'WHOLEGAME,FIRSTHALF,SECONDHALF,Q1,Q2,Q3,Q4,OVERTIME';
 

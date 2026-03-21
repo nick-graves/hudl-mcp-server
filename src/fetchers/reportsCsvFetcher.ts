@@ -8,24 +8,45 @@ export interface SeasonContext {
 }
 
 /**
- * Navigate to the reports page, let it redirect, and extract the current
- * season ID + game IDs from the URL and Hudl's internal APIs.
+ * Navigate to the reports page and return the season context (season ID +
+ * game IDs) needed to build report URLs.
+ *
+ * @param seasonId  Optional. When provided the given season is used directly
+ *                  and the redirect-URL discovery step is skipped.  When
+ *                  omitted the current season is discovered automatically from
+ *                  the reports-page redirect — identical to the original
+ *                  behaviour, so all existing callers are unaffected.
  */
 export async function getSeasonContext(
   page: Page,
-  teamId: string
+  teamId: string,
+  seasonId?: string
 ): Promise<SeasonContext> {
-  await page.goto(`https://www.hudl.com/reports/teams/${teamId}`, {
+  // When a specific season is requested, include it in the navigation URL so
+  // that Hudl's client-side JavaScript loads the correct season context and
+  // populates the full stats URL (including G[]= game IDs) in the address bar.
+  const navUrl = seasonId
+    ? `https://www.hudl.com/reports/teams/${teamId}?S=${seasonId}`
+    : `https://www.hudl.com/reports/teams/${teamId}`;
+
+  await page.goto(navUrl, {
     waitUntil: 'networkidle',
     timeout: 30000,
   });
 
-  // Extract season ID from redirected URL (?S=...)
-  const url = new URL(page.url());
-  const seasonId = url.searchParams.get('S') ?? '';
-  if (!seasonId) throw new Error('Could not determine current season ID from reports redirect');
+  // If a specific season was requested use it directly; otherwise read the
+  // season ID that Hudl redirected us to (current season).
+  if (!seasonId) {
+    const url = new URL(page.url());
+    seasonId = url.searchParams.get('S') ?? '';
+    if (!seasonId) throw new Error('Could not determine current season ID from reports redirect');
+    console.error(`[season-ctx] Current season from redirect: ${seasonId}`);
+  } else {
+    console.error(`[season-ctx] Using requested season: ${seasonId}`);
+  }
 
   // Fetch event IDs for this season
+  const resolvedId = seasonId; // narrowed to string above
   const eventIds: string[] = await page.evaluate(
     async (apiUrl: string) => {
       const res = await fetch(apiUrl, { credentials: 'include' });
@@ -33,11 +54,75 @@ export async function getSeasonContext(
       const data = await res.json();
       return Array.isArray(data) ? data : [];
     },
-    `https://www.hudl.com/reports/teams/${teamId}/season/${seasonId}/eventids`
+    `https://www.hudl.com/reports/teams/${teamId}/season/${resolvedId}/eventids`
   );
 
+  console.error(`[season-ctx] Found ${eventIds.length} event IDs for season ${resolvedId}`);
+
   if (eventIds.length === 0) {
-    return { seasonId, uniqueGameIds: [] };
+    // The eventids API only works for recent seasons.  For historical seasons
+    // fall back to /api/v2/teams/{teamId}/seasons, which returns a flat list
+    // of both season entries and game entries.  Season entries have a linkId
+    // matching the seasonId; game entries have a parentId matching the season
+    // entry's categoryId.  We use the game linkId values as event IDs to
+    // resolve uniqueGameId values via the events API.
+    console.error(`[season-ctx] eventids empty — trying /api/v2 fallback for season ${resolvedId}`);
+
+    const allItems: Record<string, unknown>[] = await page.evaluate(
+      async (apiUrl: string) => {
+        try {
+          const res = await fetch(apiUrl, { credentials: 'include' });
+          if (!res.ok) return [];
+          const data = await res.json();
+          return Array.isArray(data) ? data : [];
+        } catch { return []; }
+      },
+      `https://www.hudl.com/api/v2/teams/${teamId}/seasons`
+    );
+
+    console.error(`[season-ctx] /api/v2 returned ${allItems.length} items`);
+
+    // Find the season entry whose linkId matches the requested seasonId
+    const seasonEntry = allItems.find(item => String(item['linkId']) === resolvedId);
+    if (!seasonEntry) {
+      console.error(`[season-ctx] No season entry found with linkId ${resolvedId}`);
+      return { seasonId: resolvedId, uniqueGameIds: [] };
+    }
+
+    const seasonCategoryId = String(seasonEntry['categoryId'] ?? '');
+    console.error(`[season-ctx] Season categoryId: ${seasonCategoryId}`);
+
+    // Game entries for this season have parentId === seasonCategoryId
+    const gameEntries = allItems.filter(
+      item => String(item['parentId']) === seasonCategoryId && String(item['linkId']) !== ''
+    );
+    console.error(`[season-ctx] Found ${gameEntries.length} game entries for season ${resolvedId}`);
+
+    if (gameEntries.length === 0) {
+      return { seasonId: resolvedId, uniqueGameIds: [] };
+    }
+
+    // Use the game linkId values as event IDs to look up uniqueGameIds
+    const gameLinkIds = gameEntries.map(g => String(g['linkId'])).filter(Boolean);
+    const queryString = gameLinkIds.map(id => `eventIds=${id}`).join('&');
+
+    const events: { uniqueGameId?: string }[] = await page.evaluate(
+      async (apiUrl: string) => {
+        try {
+          const res = await fetch(apiUrl, { credentials: 'include' });
+          if (!res.ok) return [];
+          return res.json();
+        } catch { return []; }
+      },
+      `https://www.hudl.com/reports/teams/${teamId}/season/${resolvedId}/events?${queryString}`
+    );
+
+    const uniqueGameIds = events
+      .map(e => e.uniqueGameId)
+      .filter((id): id is string => !!id);
+
+    console.error(`[season-ctx] Resolved ${uniqueGameIds.length} uniqueGameIds via /api/v2 fallback`);
+    return { seasonId: resolvedId, uniqueGameIds };
   }
 
   // Fetch full event objects to get uniqueGameId values
@@ -48,14 +133,15 @@ export async function getSeasonContext(
       if (!res.ok) return [];
       return res.json();
     },
-    `https://www.hudl.com/reports/teams/${teamId}/season/${seasonId}/events?${queryString}`
+    `https://www.hudl.com/reports/teams/${teamId}/season/${resolvedId}/events?${queryString}`
   );
 
   const uniqueGameIds = events
     .map((e) => e.uniqueGameId)
     .filter((id): id is string => !!id);
 
-  return { seasonId, uniqueGameIds };
+  console.error(`[season-ctx] Resolved ${uniqueGameIds.length} uniqueGameIds`);
+  return { seasonId: resolvedId, uniqueGameIds };
 }
 
 // ── Available seasons list ───────────────────────────────────────────────────

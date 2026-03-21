@@ -7,6 +7,7 @@ import { scrapeTeamStats } from './scrapers/teamStatsScraper.js';
 import { scrapePlayerStats } from './scrapers/playerStatsScraper.js';
 import { scrapeGameResults } from './scrapers/gameResultsScraper.js';
 import { scrapeRoster } from './scrapers/rosterScraper.js';
+import { listAvailableSeasons } from './fetchers/reportsCsvFetcher.js';
 
 export function createServer(config: HudlConfig): McpServer {
   // Session is held in memory for the lifetime of the process
@@ -41,11 +42,11 @@ export function createServer(config: HudlConfig): McpServer {
           .describe('Season identifier e.g. "2024-2025". Defaults to current season.'),
       },
     },
-    async (_args) => {
+    async ({ season }) => {
       const { page, session: freshSession } = await ensureAuthenticated(session, config);
       session = freshSession;
 
-      const stats = await scrapeTeamStats(page, session, config.teamId, onSessionUpdate);
+      const stats = await scrapeTeamStats(page, session, config.teamId, onSessionUpdate, season);
 
       return {
         content: [
@@ -76,7 +77,7 @@ export function createServer(config: HudlConfig): McpServer {
           .describe('Season identifier. Defaults to current season.'),
       },
     },
-    async ({ playerName }) => {
+    async ({ playerName, season }) => {
       const { page, session: freshSession } = await ensureAuthenticated(session, config);
       session = freshSession;
 
@@ -85,7 +86,8 @@ export function createServer(config: HudlConfig): McpServer {
         session,
         config.teamId,
         onSessionUpdate,
-        playerName
+        playerName,
+        season
       );
 
       return {
@@ -165,6 +167,34 @@ export function createServer(config: HudlConfig): McpServer {
           {
             type: 'text',
             text: JSON.stringify(roster, null, 2),
+          },
+        ],
+      };
+    }
+  );
+
+  // ── list_seasons ───────────────────────────────────────────────────────────
+  server.registerTool(
+    'list_seasons',
+    {
+      description:
+        'List all available seasons for the team, sorted newest first. ' +
+        'Returns seasonId, label (e.g. "2024-2025 Season"), and seasonYear. ' +
+        'Use the seasonId value with get_team_stats, get_player_stats, or get_game_results ' +
+        'to retrieve data for a specific historical season.',
+      inputSchema: {},
+    },
+    async (_args) => {
+      const { page, session: freshSession } = await ensureAuthenticated(session, config);
+      session = freshSession;
+
+      const seasons = await listAvailableSeasons(page, config.teamId);
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(seasons, null, 2),
           },
         ],
       };

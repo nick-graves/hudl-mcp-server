@@ -125,12 +125,9 @@ The PDF report can be redesigned without touching the MCP server or changing how
 
 ### Current Utilities
 
-| Script | Purpose |
-|--------|---------|
-| `aloha_lacrosse_report.py` | Multi-game season report with player and team analysis — branded with team logo and colors |
-| `generate_2024_season_pdf.py` | 2024 full season analysis |
-| `generate_2023_season_pdf.py` | 2023 full season analysis |
-| `generate_2018_stats_pdf.py` | 2018 historical stats |
+PDF generation and report scripts live in the companion repository
+**`alc-lacrosse-reports`**, which consumes data from this MCP server.
+See that repo for branded game and season report generation.
 
 ---
 
@@ -199,13 +196,11 @@ hudl-mcp-server/
     config.ts        — Environment variable loading
     types.ts         — TypeScript interfaces
 
-  aloha_lacrosse_report.py     — Current season branded PDF report
-  generate_2024_season_pdf.py  — 2024 season analysis utility
-  generate_2023_season_pdf.py  — 2023 season analysis utility
-  generate_2018_stats_pdf.py   — 2018 historical stats utility
-
-  ARCHITECTURE.md   — This document (design philosophy and decisions)
-  PROGRESS.md       — Build progress, current status, known limitations
-  .env              — Credentials (never committed)
+  ARCHITECTURE.md    — This document (design philosophy and decisions)
+  PROGRESS.md        — Build progress, current status, known limitations
+  .env               — Credentials (never committed)
   .hudl-session.json — Cached session (never committed)
 ```
+
+PDF generation utilities and branded report scripts are maintained
+separately in the **`alc-lacrosse-reports`** companion repository.

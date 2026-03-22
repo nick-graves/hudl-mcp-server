@@ -111,7 +111,8 @@ HUDL_TEAM_ID=...
 ## Known Limitations / Next Steps
 
 - **Position data missing** from player stats — Hudl's reports page doesn't include position in the exported columns. Would need to cross-reference with the roster.
-- **Game IDs are hardcoded per season** — the fetcher discovers game IDs dynamically but only looks at the current season. Multi-season queries aren't supported yet.
+- **Multi-season support** ✅ Complete — `list_seasons` dynamically discovers all available seasons; `get_game_results` and `get_game_stats` accept an optional `seasonId` parameter for historical queries.
+- **Single-game stats** ✅ Complete — `get_game_stats` returns full player-level stats for any specific game using fuzzy opponent name matching and date-based alignment.
 - **Roster only shows current season members** — athletes from previous seasons who are no longer active won't appear.
 - **No scheduled/automated refresh** — session is cached but if it expires the next tool call will trigger a full re-login.
 - **Team stats tool** working but could return richer data (per-game breakdowns, opponent comparisons).

@@ -3,3 +3,13 @@ dist/
 .env
 .hudl-session.json
 *.js.map
+
+# Generated PDF reports (can be regenerated from scripts)
+*.pdf
+
+# Cached API/scrape data
+discovery-results.json
+game-results-*.json
+
+# Claude Code internals
+.claude/

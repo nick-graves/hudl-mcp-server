@@ -7,6 +7,8 @@ import { scrapeTeamStats } from './scrapers/teamStatsScraper.js';
 import { scrapePlayerStats } from './scrapers/playerStatsScraper.js';
 import { scrapeGameResults } from './scrapers/gameResultsScraper.js';
 import { scrapeRoster } from './scrapers/rosterScraper.js';
+import { scrapeGameStats } from './scrapers/gameStatsScraper.js';
+import { listAvailableSeasons } from './fetchers/reportsCsvFetcher.js';
 
 export function createServer(config: HudlConfig): McpServer {
   // Session is held in memory for the lifetime of the process
@@ -41,11 +43,11 @@ export function createServer(config: HudlConfig): McpServer {
           .describe('Season identifier e.g. "2024-2025". Defaults to current season.'),
       },
     },
-    async (_args) => {
+    async ({ season }) => {
       const { page, session: freshSession } = await ensureAuthenticated(session, config);
       session = freshSession;
 
-      const stats = await scrapeTeamStats(page, session, config.teamId, onSessionUpdate);
+      const stats = await scrapeTeamStats(page, session, config.teamId, onSessionUpdate, season);
 
       return {
         content: [
@@ -76,7 +78,7 @@ export function createServer(config: HudlConfig): McpServer {
           .describe('Season identifier. Defaults to current season.'),
       },
     },
-    async ({ playerName }) => {
+    async ({ playerName, season }) => {
       const { page, session: freshSession } = await ensureAuthenticated(session, config);
       session = freshSession;
 
@@ -85,7 +87,8 @@ export function createServer(config: HudlConfig): McpServer {
         session,
         config.teamId,
         onSessionUpdate,
-        playerName
+        playerName,
+        season
       );
 
       return {
@@ -118,7 +121,7 @@ export function createServer(config: HudlConfig): McpServer {
           .describe('Maximum number of games to return. Omit for all games.'),
       },
     },
-    async ({ limit }) => {
+    async ({ limit, season }) => {
       const { page, session: freshSession } = await ensureAuthenticated(session, config);
       session = freshSession;
 
@@ -127,7 +130,8 @@ export function createServer(config: HudlConfig): McpServer {
         session,
         config.teamId,
         onSessionUpdate,
-        limit
+        limit,
+        season
       );
 
       return {
@@ -165,6 +169,85 @@ export function createServer(config: HudlConfig): McpServer {
           {
             type: 'text',
             text: JSON.stringify(roster, null, 2),
+          },
+        ],
+      };
+    }
+  );
+
+  // ── list_seasons ───────────────────────────────────────────────────────────
+  server.registerTool(
+    'list_seasons',
+    {
+      description:
+        'List all available seasons for the team, sorted newest first. ' +
+        'Returns seasonId, label (e.g. "2024-2025 Season"), and seasonYear. ' +
+        'Use the seasonId value with get_team_stats, get_player_stats, or get_game_results ' +
+        'to retrieve data for a specific historical season.',
+      inputSchema: {},
+    },
+    async (_args) => {
+      const { page, session: freshSession } = await ensureAuthenticated(session, config);
+      session = freshSession;
+
+      const seasons = await listAvailableSeasons(page, config.teamId);
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(seasons, null, 2),
+          },
+        ],
+      };
+    }
+  );
+
+  // ── get_game_stats ─────────────────────────────────────────────────────────
+  server.registerTool(
+    'get_game_stats',
+    {
+      description:
+        'Get per-game player statistics for a single specified game: goals, assists, shots, ' +
+        'saves, faceoffs, and turnovers for every player, filtered to that one game only. ' +
+        'Use the game parameter to identify which game: "latest" returns the most recent game, ' +
+        'an opponent name (e.g. "Beaverton") returns the most recent game vs that opponent, ' +
+        'a date string (e.g. "May 18") targets that specific game, or a numeric index ' +
+        '(0 = most recent, 1 = second most recent, etc.) selects by position. ' +
+        'If an opponent was played multiple times in the season, a warning is logged and the ' +
+        'most recent match is returned — use a date or index to select a specific game.',
+      inputSchema: {
+        game: z
+          .string()
+          .optional()
+          .describe(
+            'Game identifier: "latest" (default), opponent name, date (e.g. "May 18"), ' +
+            'or 0-based index newest-first. Use a date when the same opponent appears multiple times.'
+          ),
+        season: z
+          .string()
+          .optional()
+          .describe('Season identifier. Defaults to current season.'),
+      },
+    },
+    async ({ game, season }) => {
+      const { page, session: freshSession } = await ensureAuthenticated(session, config);
+      session = freshSession;
+
+      const result = await scrapeGameStats(
+        page,
+        session,
+        config.teamId,
+        onSessionUpdate,
+        game ?? 'latest',
+        season,
+      );
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: result ? JSON.stringify(result, null, 2) : 'No data found for the specified game.',
           },
         ],
       };

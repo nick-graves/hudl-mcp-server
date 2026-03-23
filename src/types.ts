@@ -19,7 +19,6 @@ export type EndpointPurpose =
   | 'team_stats'
   | 'player_stats'
   | 'game_results'
-  | 'roster'
   | 'unknown';
 
 export interface DiscoveredEndpoint {
@@ -93,11 +92,3 @@ export interface GameResult {
   raw?: Record<string, unknown>;
 }
 
-export interface RosterPlayer {
-  playerId: string;
-  name: string;
-  number: string;
-  position: string;
-  grade?: string;
-  raw?: Record<string, unknown>;
-}

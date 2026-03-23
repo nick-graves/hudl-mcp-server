@@ -6,7 +6,6 @@ import { ensureAuthenticated } from './auth/hudlAuth.js';
 import { scrapeTeamStats } from './scrapers/teamStatsScraper.js';
 import { scrapePlayerStats } from './scrapers/playerStatsScraper.js';
 import { scrapeGameResults } from './scrapers/gameResultsScraper.js';
-import { scrapeRoster } from './scrapers/rosterScraper.js';
 import { scrapeGameStats } from './scrapers/gameStatsScraper.js';
 import { listAvailableSeasons } from './fetchers/reportsCsvFetcher.js';
 
@@ -24,7 +23,7 @@ export function createServer(config: HudlConfig): McpServer {
     {
       instructions:
         'Provides access to Hudl lacrosse team data for Aloha High School including team stats, ' +
-        'player stats, game results, and the roster. Data is fetched via authenticated browser ' +
+        'player stats, and game results. Data is fetched via authenticated browser ' +
         'automation. The first call per session may take 10-20 seconds while the browser starts.',
     }
   );
@@ -139,36 +138,6 @@ export function createServer(config: HudlConfig): McpServer {
           {
             type: 'text',
             text: JSON.stringify(games, null, 2),
-          },
-        ],
-      };
-    }
-  );
-
-  // ── get_roster ─────────────────────────────────────────────────────────────
-  server.registerTool(
-    'get_roster',
-    {
-      description:
-        'Get the full team roster with player names, jersey numbers, and positions.',
-      inputSchema: {
-        season: z
-          .string()
-          .optional()
-          .describe('Season identifier. Defaults to current season.'),
-      },
-    },
-    async (_args) => {
-      const { page, session: freshSession } = await ensureAuthenticated(session, config);
-      session = freshSession;
-
-      const roster = await scrapeRoster(page, session, config.teamId, onSessionUpdate);
-
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify(roster, null, 2),
           },
         ],
       };

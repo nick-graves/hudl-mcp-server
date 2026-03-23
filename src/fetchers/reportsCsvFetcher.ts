@@ -15,6 +15,18 @@ export interface SeasonContext {
 }
 
 /**
+ * Returns false for Hudl sample/demo videos and other non-real-game events
+ * that occasionally appear in a season's event list.
+ */
+function isRealGame(event: Record<string, unknown>): boolean {
+  const name = String(event['name'] ?? '').trim();
+  if (/^sample\b/i.test(name)) return false;
+  if (/sample\s+video/i.test(name)) return false;
+  if (/\bdemo\b/i.test(name)) return false;
+  return true;
+}
+
+/**
  * Navigate to the reports page and return the season context (season ID +
  * game IDs) needed to build report URLs.
  *
@@ -109,6 +121,30 @@ export async function getSeasonContext(
       return { seasonId: resolvedId, uniqueGameIds: [], gameEvents: [] };
     }
 
+    // Log game entry structure to help diagnose ID mapping
+    if (gameEntries.length > 0) {
+      console.error('[season-ctx] Game entry keys:', Object.keys(gameEntries[0]).join(', '));
+      console.error('[season-ctx] Sample game entry:', JSON.stringify(
+        Object.fromEntries(Object.entries(gameEntries[0]).slice(0, 8))
+      ));
+    }
+
+    // Check if v2 game entries already carry uniqueGameId directly
+    const directUniqueIds = gameEntries
+      .map(g => String(g['uniqueGameId'] ?? ''))
+      .filter(Boolean);
+
+    if (directUniqueIds.length > 0) {
+      console.error(`[season-ctx] Found uniqueGameId directly on v2 entries: ${directUniqueIds.length}`);
+      const gameEvents: GameEvent[] = gameEntries
+        .filter(g => g['uniqueGameId'])
+        .map(g => ({
+          uniqueGameId: String(g['uniqueGameId']),
+          date: String(g['datePlayed'] ?? g['dateScheduled'] ?? g['date'] ?? '') || undefined,
+        }));
+      return { seasonId: resolvedId, uniqueGameIds: directUniqueIds, gameEvents };
+    }
+
     // Use the game linkId values as event IDs to look up uniqueGameIds
     const gameLinkIds = gameEntries.map(g => String(g['linkId'])).filter(Boolean);
     const queryString = gameLinkIds.map(id => `eventIds=${id}`).join('&');
@@ -126,22 +162,35 @@ export async function getSeasonContext(
 
     if (events.length > 0) {
       console.error('[season-ctx] Event object keys:', Object.keys(events[0]).join(', '));
+    } else {
+      console.error('[season-ctx] Events API returned empty — falling back to gameLinkIds as uniqueGameIds');
     }
 
-    const uniqueGameIds = events
-      .map(e => String(e['uniqueGameId'] ?? ''))
-      .filter(Boolean);
+    const realFallbackEvents = events.filter(e => isRealGame(e));
+    const skippedFallback = events.length - realFallbackEvents.length;
+    if (skippedFallback > 0) {
+      console.error(`[season-ctx] Fallback: filtered out ${skippedFallback} non-game event(s)`);
+    }
 
-    const gameEvents: GameEvent[] = events
-      .filter(e => e['uniqueGameId'])
-      .map(e => ({
-        uniqueGameId: String(e['uniqueGameId']),
-        date: String(
-          e['datePlayed'] ?? e['dateScheduled'] ??
-          e['eventDate'] ?? e['date'] ?? e['gameDate'] ??
-          e['startDate'] ?? e['scheduledDate'] ?? ''
-        ) || undefined,
-      }));
+    const uniqueGameIds = realFallbackEvents.length > 0
+      ? realFallbackEvents.map(e => String(e['uniqueGameId'] ?? '')).filter(Boolean)
+      : gameLinkIds; // last resort: try linkIds directly as game IDs
+
+    const gameEvents: GameEvent[] = realFallbackEvents.length > 0
+      ? realFallbackEvents
+          .filter(e => e['uniqueGameId'])
+          .map(e => ({
+            uniqueGameId: String(e['uniqueGameId']),
+            date: String(
+              e['datePlayed'] ?? e['dateScheduled'] ??
+              e['eventDate'] ?? e['date'] ?? e['gameDate'] ??
+              e['startDate'] ?? e['scheduledDate'] ?? ''
+            ) || undefined,
+          }))
+      : gameEntries.map(g => ({
+          uniqueGameId: String(g['linkId']),
+          date: String(g['datePlayed'] ?? g['dateScheduled'] ?? g['date'] ?? '') || undefined,
+        }));
 
     console.error(`[season-ctx] Resolved ${uniqueGameIds.length} uniqueGameIds via /api/v2 fallback`);
     return { seasonId: resolvedId, uniqueGameIds, gameEvents };
@@ -169,11 +218,17 @@ export async function getSeasonContext(
     console.error('[season-ctx] Sample event date values:', JSON.stringify(sample, null, 2));
   }
 
-  const uniqueGameIds = events
+  const realEvents = events.filter(e => isRealGame(e));
+  const skipped = events.length - realEvents.length;
+  if (skipped > 0) {
+    console.error(`[season-ctx] Filtered out ${skipped} non-game event(s) (sample/demo videos)`);
+  }
+
+  const uniqueGameIds = realEvents
     .map((e) => String(e['uniqueGameId'] ?? ''))
     .filter(Boolean);
 
-  const gameEvents: GameEvent[] = events
+  const gameEvents: GameEvent[] = realEvents
     .filter(e => e['uniqueGameId'])
     .map(e => ({
       uniqueGameId: String(e['uniqueGameId']),

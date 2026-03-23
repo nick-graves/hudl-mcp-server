@@ -1,6 +1,6 @@
 # hudl-mcp-server
 
-An MCP (Model Context Protocol) server that connects Claude Desktop to Hudl, giving Claude live access to team stats, player stats, game results, and roster data through natural language.
+An MCP (Model Context Protocol) server that connects Claude Desktop to Hudl, giving Claude live access to team stats, player stats, and game results through natural language.
 
 ---
 
@@ -32,7 +32,6 @@ Claude Desktop  →  MCP Tools  →  Hudl (via Playwright)
 | Tool | Description |
 |------|-------------|
 | `list_seasons` | Lists all available seasons with IDs, sorted newest first |
-| `get_roster` | Full team roster with jersey numbers and positions |
 | `get_game_results` | Season game results — scores, opponents, home/away, W/L |
 | `get_player_stats` | Full player stat export — goals, assists, shots, faceoffs, turnovers, saves, and more |
 | `get_team_stats` | Aggregated team stats — record, goals scored/allowed, win % |
@@ -56,7 +55,6 @@ src/
   fetchers/
     reportsCsvFetcher.ts  — Navigate to reports page, intercept CSV export
   scrapers/
-    rosterScraper.ts      — Roster from team manage page
     gameResultsScraper.ts — Game results from team timeline
     gameStatsScraper.ts   — Per-game player stats with fuzzy opponent matching
     playerStatsScraper.ts — Full player stats via CSV interception

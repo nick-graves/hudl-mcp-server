@@ -45,8 +45,8 @@ export async function scrapeTeamStats(
   const text = await page.locator('body').innerText();
   console.error('[team-stats] Page text preview:\n' + text.split('\n').slice(0, 60).join('\n'));
 
-  // Get win/loss record from game results on team page
-  const record = await fetchWinLossRecord(page, teamId);
+  // Get win/loss record from the season-scoped GRP=GAME reports page
+  const record = await fetchWinLossFromReportsPage(page, teamId, ctx.seasonId, ctx.uniqueGameIds);
 
   return parseTeamStatsFromText(text, ctx.seasonId, record);
 }
@@ -131,26 +131,63 @@ function emptyStats(
   };
 }
 
-// ── Win/loss record via team page ────────────────────────────────────────────
+// ── Win/loss record from season-scoped GRP=GAME reports page ─────────────────
+//
+// Uses the same reports page + parsing approach as gameResultsScraper so the
+// record is always tied to the correct season and game list.
 
-async function fetchWinLossRecord(
+async function fetchWinLossFromReportsPage(
   page: Page,
-  teamId: string
+  teamId: string,
+  seasonId: string,
+  uniqueGameIds: string[]
 ): Promise<{ wins: number; losses: number; ties: number }> {
   try {
-    await page.goto(`https://www.hudl.com/team/v2/${teamId}`, {
-      waitUntil: 'networkidle',
-      timeout: 20000,
-    });
+    const gameParam = uniqueGameIds.join(',');
+    const periods = 'WHOLEGAME,FIRSTHALF,SECONDHALF,Q1,Q2,Q3,Q4,OVERTIME';
+
+    const qs = [
+      `A%5B%5D=ALL`,
+      `GRP=GAME`,
+      gameParam ? `G%5B%5D=${encodeURIComponent(gameParam)}` : '',
+      `P%5B%5D=${encodeURIComponent(periods)}`,
+      `Q=all-season`,
+      `S=${seasonId}`,
+      `SD=${teamId}`,
+      `SHT%5B%5D=ALL`,
+      `SST=GOALPERCENTAGE`,
+      `ST=0-Goals`,
+      `STYPE=TOTALS`,
+      `T=${teamId}`,
+      `Z=ZONE`,
+    ].filter(Boolean).join('&');
+
+    const url = `https://www.hudl.com/reports/teams/${teamId}/stats?${qs}`;
+    console.error(`[team-stats] Fetching W/L record from: ${url}`);
+
+    await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
     await page.waitForTimeout(2000);
 
     const text = await page.locator('body').innerText();
-    const winMatches = [...text.matchAll(/\bWin\b/g)].length;
-    const lossMatches = [...text.matchAll(/\bLoss\b/g)].length;
-    const tieMatches = [...text.matchAll(/\bTie\b/g)].length;
+    const lines = text.split('\n').map((l) => l.trim()).filter((l) => l.length > 0);
 
-    return { wins: winMatches, losses: lossMatches, ties: tieMatches };
-  } catch {
+    // Same result-line pattern as gameResultsScraper: "W 6-5", "L 9-11", "T 4-4"
+    const RESULT_RE = /^(W|L|T)\s+\d+-\d+$/i;
+
+    let wins = 0, losses = 0, ties = 0;
+    for (const line of lines) {
+      const m = line.match(RESULT_RE);
+      if (!m) continue;
+      const outcome = m[1].toUpperCase();
+      if (outcome === 'W') wins++;
+      else if (outcome === 'L') losses++;
+      else ties++;
+    }
+
+    console.error(`[team-stats] W/L record: ${wins}W ${losses}L ${ties}T`);
+    return { wins, losses, ties };
+  } catch (err) {
+    console.error('[team-stats] fetchWinLossFromReportsPage failed:', err);
     return { wins: 0, losses: 0, ties: 0 };
   }
 }

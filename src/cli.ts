@@ -2,8 +2,11 @@
  * Interactive CLI for testing Hudl MCP tools locally.
  * Run:  npm run cli
  *
- * Presents a menu, calls the same functions the MCP server uses,
- * and prints the results so you can inspect/debug without needing Claude.
+ * Mirrors the exact tool calls the MCP server makes so you see precisely
+ * what the LLM receives. Output is split into two clearly-labelled sections:
+ *
+ *   [DEBUG]  — scraper/browser progress messages
+ *   [LLM]    — the exact JSON payload the MCP server would return to the LLM
  */
 
 import { createInterface } from 'readline';
@@ -11,11 +14,10 @@ import { loadConfig } from './config.js';
 import { loadSession, saveSession } from './cache/sessionCache.js';
 import { ensureAuthenticated } from './auth/hudlAuth.js';
 import { closeBrowser } from './browser/browserManager.js';
-import { scrapeRoster } from './scrapers/rosterScraper.js';
 import { scrapePlayerStats } from './scrapers/playerStatsScraper.js';
 import { scrapeTeamStats } from './scrapers/teamStatsScraper.js';
 import { scrapeGameResults } from './scrapers/gameResultsScraper.js';
-import { scrapeGameStats }   from './scrapers/gameStatsScraper.js';
+import { scrapeGameStats } from './scrapers/gameStatsScraper.js';
 import { listAvailableSeasons } from './fetchers/reportsCsvFetcher.js';
 import type { SessionState } from './types.js';
 
@@ -27,243 +29,320 @@ function ask(question: string): Promise<string> {
   return new Promise((resolve) => rl.question(question, resolve));
 }
 
-function line(char = '─', length = 60): string {
-  return char.repeat(length);
+// ── Display helpers ───────────────────────────────────────────────────────────
+
+const W = 72;
+
+function hr(char = '─', width = W): string {
+  return char.repeat(width);
 }
 
-function printJson(data: unknown): void {
-  console.log(JSON.stringify(data, null, 2));
+function debugStart(toolName: string, params: Record<string, unknown> = {}): void {
+  console.log('\n' + hr('═'));
+  const paramStr = Object.keys(params).length
+    ? '  params: ' + JSON.stringify(params)
+    : '  params: (none)';
+  console.log(`  TOOL: ${toolName}`);
+  console.log(paramStr);
+  console.log(hr('═'));
+  console.log('  [DEBUG OUTPUT]');
+  console.log(hr());
 }
 
-function printTable(rows: Record<string, unknown>[], columns: string[]): void {
-  if (rows.length === 0) {
-    console.log('  (no data)');
+function llmStart(): void {
+  console.log('\n' + hr('─'));
+  console.log('  ▼  LLM RESPONSE  (exactly what the model receives)  ▼');
+  console.log(hr('─'));
+}
+
+function llmEnd(): void {
+  console.log(hr('─'));
+  console.log('  ▲  END LLM RESPONSE  ▲');
+  console.log(hr('─'));
+}
+
+/** Print the LLM payload exactly as the MCP server formats it. */
+function printLlmPayload(data: unknown): string {
+  const json = JSON.stringify(data, null, 2);
+  llmStart();
+  console.log(json);
+  llmEnd();
+  return json;
+}
+
+// ── Validation ────────────────────────────────────────────────────────────────
+
+type ValidationResult = { pass: boolean; warnings: string[]; errors: string[] };
+
+function validate(label: string, result: ValidationResult): void {
+  const { warnings, errors } = result;
+  if (errors.length === 0 && warnings.length === 0) {
+    console.log(`\n  ✔  VALIDATION PASSED — ${label}`);
     return;
   }
+  console.log(`\n  VALIDATION — ${label}`);
+  errors.forEach((e) => console.log(`    ✖  ERROR:   ${e}`));
+  warnings.forEach((w) => console.log(`    ⚠  WARNING: ${w}`));
+}
 
-  // Calculate column widths
-  const widths: number[] = columns.map((col) =>
-    Math.max(col.length, ...rows.map((r) => String(r[col] ?? '').length))
-  );
+function validatePlayerStats(players: unknown[]): ValidationResult {
+  const warnings: string[] = [];
+  const errors: string[] = [];
+  if (players.length === 0) errors.push('Player stats array is empty');
+  const requiredKeys = ['name', 'goals', 'assists', 'gamesPlayed'];
+  const sample = players[0] as Record<string, unknown> | undefined;
+  if (sample) {
+    requiredKeys.forEach((k) => {
+      if (sample[k] === undefined || sample[k] === null)
+        warnings.push(`Field "${k}" missing on first player`);
+    });
+    // Sanity: gamesPlayed should be a positive number
+    const gp = Number(sample['gamesPlayed']);
+    if (isNaN(gp) || gp <= 0) warnings.push(`gamesPlayed is not a positive number on first player (got ${sample['gamesPlayed']})`);
+  }
+  const nullNames = (players as Record<string, unknown>[]).filter((p) => !p['name']);
+  if (nullNames.length > 0) errors.push(`${nullNames.length} player(s) have no name`);
+  return { pass: errors.length === 0, warnings, errors };
+}
 
-  const header = columns.map((col, i) => col.padEnd(widths[i])).join('  ');
-  const divider = widths.map((w) => '─'.repeat(w)).join('  ');
-
-  console.log(header);
-  console.log(divider);
-  rows.forEach((row) => {
-    const line = columns.map((col, i) => String(row[col] ?? '').padEnd(widths[i])).join('  ');
-    console.log(line);
+function validateTeamStats(stats: Record<string, unknown>): ValidationResult {
+  const warnings: string[] = [];
+  const errors: string[] = [];
+  const requiredKeys = ['season', 'wins', 'losses', 'games', 'goalsFor', 'goalsAgainst', 'winPercentage'];
+  requiredKeys.forEach((k) => {
+    if (stats[k] === undefined || stats[k] === null)
+      errors.push(`Field "${k}" is missing`);
   });
+  const wins = Number(stats['wins']);
+  const losses = Number(stats['losses']);
+  const games = Number(stats['games']);
+  if (!isNaN(wins) && !isNaN(losses) && !isNaN(games)) {
+    if (wins + losses > games)
+      errors.push(`wins(${wins}) + losses(${losses}) > games(${games}) — inconsistent record`);
+  }
+  if (!stats['season'] || stats['season'] === '') warnings.push('season field is blank');
+  return { pass: errors.length === 0, warnings, errors };
 }
 
-// ── Menu ─────────────────────────────────────────────────────────────────────
-
-function printMenu(): void {
-  console.log('\n' + line());
-  console.log('  Hudl MCP Test CLI');
-  console.log(line());
-  console.log('  1.  Get Roster');
-  console.log('  2.  Get Player Stats (all)');
-  console.log('  3.  Get Player Stats (search by name)');
-  console.log('  4.  Get Team Stats');
-  console.log('  5.  Get Game Results');
-  console.log('  6.  Get Game Results (limited)');
-  console.log('  7.  [DISCOVERY] List Available Seasons');
-  console.log('  8.  Get Single-Game Stats');
-  console.log('  0.  Exit');
-  console.log(line());
-}
-
-// ── Tool runners ─────────────────────────────────────────────────────────────
-
-async function runRoster(session: SessionState | null, config: ReturnType<typeof loadConfig>) {
-  console.log('\nFetching roster...');
-  const { page, session: s } = await ensureAuthenticated(session, config);
-  const roster = await scrapeRoster(page, s, config.teamId, (updated) => {
-    saveSession(updated);
+function validateGameResults(games: unknown[]): ValidationResult {
+  const warnings: string[] = [];
+  const errors: string[] = [];
+  if (games.length === 0) errors.push('Game results array is empty');
+  const requiredKeys = ['date', 'opponent', 'result', 'teamScore', 'opponentScore'];
+  let malformed = 0;
+  (games as Record<string, unknown>[]).forEach((g, i) => {
+    requiredKeys.forEach((k) => {
+      if (g[k] === undefined || g[k] === null || g[k] === '')
+        malformed++;
+    });
+    if (!['W', 'L', 'T'].includes(String(g['result'])))
+      warnings.push(`Game ${i}: result "${g['result']}" is not W/L/T`);
   });
-
-  console.log(`\nRoster — ${roster.length} players\n`);
-  printTable(roster as unknown as Record<string, unknown>[], ['number', 'name', 'position', 'grade']);
-  return s;
+  if (malformed > 0) warnings.push(`${malformed} missing field(s) across all games`);
+  return { pass: errors.length === 0, warnings, errors };
 }
 
-async function runPlayerStats(
+function validateSeasons(seasons: unknown[]): ValidationResult {
+  const warnings: string[] = [];
+  const errors: string[] = [];
+  if (seasons.length === 0) errors.push('No seasons returned');
+  const requiredKeys = ['seasonId', 'seasonYear', 'label'];
+  const sample = seasons[0] as Record<string, unknown> | undefined;
+  if (sample) {
+    requiredKeys.forEach((k) => {
+      if (sample[k] === undefined || sample[k] === null || sample[k] === '')
+        warnings.push(`Field "${k}" missing on first season`);
+    });
+  }
+  return { pass: errors.length === 0, warnings, errors };
+}
+
+function validateGameStats(result: Record<string, unknown> | null): ValidationResult {
+  const warnings: string[] = [];
+  const errors: string[] = [];
+  if (!result) {
+    errors.push('Result is null — game not found');
+    return { pass: false, warnings, errors };
+  }
+  const requiredKeys = ['date', 'opponent', 'result', 'teamScore', 'opponentScore', 'players'];
+  requiredKeys.forEach((k) => {
+    if (result[k] === undefined || result[k] === null)
+      errors.push(`Field "${k}" is missing`);
+  });
+  const players = result['players'];
+  if (!Array.isArray(players)) {
+    errors.push('"players" is not an array');
+  } else {
+    if (players.length === 0) errors.push('"players" array is empty');
+    else {
+      const sample = players[0] as Record<string, unknown>;
+      ['name', 'goals', 'assists'].forEach((k) => {
+        if (sample[k] === undefined || sample[k] === null)
+          warnings.push(`Field "${k}" missing on first player`);
+      });
+    }
+  }
+  return { pass: errors.length === 0, warnings, errors };
+}
+
+// ── Tool runners (mirror server.ts handlers exactly) ─────────────────────────
+
+async function toolGetPlayerStats(
   session: SessionState | null,
   config: ReturnType<typeof loadConfig>,
-  nameFilter?: string,
-  seasonId?: string
-) {
-  console.log('\nFetching player stats...');
+  playerName?: string,
+  season?: string
+): Promise<SessionState> {
+  const params: Record<string, unknown> = {};
+  if (playerName) params['playerName'] = playerName;
+  if (season) params['season'] = season;
+  debugStart('get_player_stats', params);
+
   const { page, session: s } = await ensureAuthenticated(session, config);
-  const players = await scrapePlayerStats(page, s, config.teamId, (updated) => {
-    saveSession(updated);
-  }, nameFilter, seasonId);
+  const players = await scrapePlayerStats(page, s, config.teamId, saveSession, playerName, season);
 
-  const label = nameFilter ? `Player Stats — filter: "${nameFilter}"` : 'Player Stats — All Players';
-  console.log(`\n${label} (sorted by points)\n`);
+  printLlmPayload(players);
+  validate('get_player_stats', validatePlayerStats(players));
 
-  // Offense
-  console.log('── Offense ──');
-  printTable(players as unknown as Record<string, unknown>[], [
-    'number', 'name', 'gamesPlayed', 'goals', 'assists', 'points', 'shots', 'shotsOnTarget', 'shotPct', 'groundBalls', 'extraManGoals',
-  ]);
-
-  // Face-offs (only show players who took face-offs)
-  const foPlayers = players.filter((p) => p.faceoffs > 0);
-  if (foPlayers.length > 0) {
-    console.log('\n── Face-Offs ──');
-    printTable(foPlayers as unknown as Record<string, unknown>[], [
-      'number', 'name', 'faceoffs', 'faceoffWins', 'faceoffLosses', 'faceoffPct',
-    ]);
-  }
-
-  // Turnovers
-  console.log('\n── Turnovers ──');
-  printTable(players as unknown as Record<string, unknown>[], [
-    'number', 'name', 'turnovers', 'forcedTurnovers', 'unforcedTurnovers', 'causedTurnovers',
-  ]);
-
-  // Goalies (players with saves or goals allowed)
-  const goalies = players.filter((p) => p.saves > 0 || p.goalsAllowed > 0);
-  if (goalies.length > 0) {
-    console.log('\n── Goalies ──');
-    printTable(goalies as unknown as Record<string, unknown>[], [
-      'number', 'name', 'saves', 'goalsAllowed', 'savePct',
-    ]);
-  }
-
-  // Penalties
-  const penaltyPlayers = players.filter((p) => p.penalties > 0);
-  if (penaltyPlayers.length > 0) {
-    console.log('\n── Penalties ──');
-    printTable(penaltyPlayers as unknown as Record<string, unknown>[], [
-      'number', 'name', 'penalties',
-    ]);
-  }
   return s;
 }
 
-async function runTeamStats(
+async function toolGetTeamStats(
   session: SessionState | null,
   config: ReturnType<typeof loadConfig>,
-  seasonId?: string
-) {
-  console.log('\nFetching team stats...');
-  const { page, session: s } = await ensureAuthenticated(session, config);
-  const stats = await scrapeTeamStats(page, s, config.teamId, (updated) => {
-    saveSession(updated);
-  }, seasonId);
+  season?: string
+): Promise<SessionState> {
+  const params: Record<string, unknown> = {};
+  if (season) params['season'] = season;
+  debugStart('get_team_stats', params);
 
-  console.log('\nTeam Stats\n');
-  console.log(`  Season:          ${stats.season}`);
-  console.log(`  Record:          ${stats.wins}W - ${stats.losses}L - ${stats.ties}T`);
-  console.log(`  Games Played:    ${stats.games}`);
-  console.log(`  Win %:           ${stats.winPercentage}%`);
-  console.log(`  Goals For:       ${stats.goalsFor}`);
-  console.log(`  Goals Against:   ${stats.goalsAgainst}`);
-  if (stats.raw?.['shotPercentage']) {
-    console.log(`  Shot %:          ${stats.raw['shotPercentage']}%`);
-  }
-  console.log('\nRaw CSV data:');
-  printJson(stats.raw);
+  const { page, session: s } = await ensureAuthenticated(session, config);
+  const stats = await scrapeTeamStats(page, s, config.teamId, saveSession, season);
+
+  printLlmPayload(stats);
+  validate('get_team_stats', validateTeamStats(stats as unknown as Record<string, unknown>));
+
   return s;
 }
 
-async function runGameResults(
+async function toolGetGameResults(
   session: SessionState | null,
   config: ReturnType<typeof loadConfig>,
   limit?: number,
-  seasonId?: string
-) {
-  console.log('\nFetching game results...');
-  const { page, session: s } = await ensureAuthenticated(session, config);
-  const games = await scrapeGameResults(page, s, config.teamId, (updated) => {
-    saveSession(updated);
-  }, limit, seasonId);
+  season?: string
+): Promise<SessionState> {
+  const params: Record<string, unknown> = {};
+  if (limit) params['limit'] = limit;
+  if (season) params['season'] = season;
+  debugStart('get_game_results', params);
 
-  const label = limit ? `Last ${limit} Games` : 'All Game Results';
-  console.log(`\n${label}\n`);
-  printTable(games as unknown as Record<string, unknown>[], [
-    'date', 'homeAway', 'opponent', 'result', 'teamScore', 'opponentScore',
-  ]);
+  const { page, session: s } = await ensureAuthenticated(session, config);
+  const games = await scrapeGameResults(page, s, config.teamId, saveSession, limit, season);
+
+  printLlmPayload(games);
+  validate('get_game_results', validateGameResults(games));
+
   return s;
 }
 
-async function runDiscoverSeasons(session: SessionState | null, config: ReturnType<typeof loadConfig>) {
-  console.log('\nFetching available seasons from Hudl...');
+async function toolListSeasons(
+  session: SessionState | null,
+  config: ReturnType<typeof loadConfig>
+): Promise<SessionState> {
+  debugStart('list_seasons');
+
   const { page, session: s } = await ensureAuthenticated(session, config);
   const seasons = await listAvailableSeasons(page, config.teamId);
 
-  console.log('\n' + line('═'));
-  console.log('  AVAILABLE SEASONS');
-  console.log(line('═'));
+  printLlmPayload(seasons);
+  validate('list_seasons', validateSeasons(seasons));
 
-  if (seasons.length === 0) {
-    console.log('\n  (no seasons found)');
-  } else {
-    console.log(`\n  ${seasons.length} seasons found (newest first):\n`);
-    printTable(seasons as unknown as Record<string, unknown>[], ['seasonId', 'seasonYear', 'label']);
-    console.log('\n  Tip: pass the seasonId to get_player_stats, get_team_stats, or get_game_results');
-    console.log('  Example: get_player_stats({ season: "1128302" })  → 2019-2020 Season');
-  }
-
-  console.log('\n' + line('═'));
   return s;
 }
 
-async function runGameStats(
+async function toolGetGameStats(
   session: SessionState | null,
   config: ReturnType<typeof loadConfig>,
-  gameIdentifier: string,
-  seasonId?: string,
-) {
-  console.log(`\nFetching single-game stats (game: "${gameIdentifier}")...`);
+  game: string,
+  season?: string
+): Promise<SessionState> {
+  const params: Record<string, unknown> = { game };
+  if (season) params['season'] = season;
+  debugStart('get_game_stats', params);
+
   const { page, session: s } = await ensureAuthenticated(session, config);
-  const result = await scrapeGameStats(page, s, config.teamId, (updated) => {
-    saveSession(updated);
-  }, gameIdentifier, seasonId);
+  const result = await scrapeGameStats(page, s, config.teamId, saveSession, game, season);
 
-  if (!result) {
-    console.log('\n  (no data returned — check season ID and game identifier)');
-    return s;
-  }
-
-  const homeAway = result.homeAway === 'home' ? 'vs' : '@';
-  console.log(`\nSingle-Game Stats — ${result.date} ${homeAway} ${result.opponent}`);
-  console.log(`  Result:   ${result.result}  ${result.teamScore}–${result.opponentScore}`);
-  console.log(`  Season:   ${result.seasonId}`);
-  console.log(`  Game ID:  ${result.uniqueGameId}`);
-  console.log(`  Players:  ${result.players.length}\n`);
-
-  // Offense
-  const scorers = result.players.filter(p => p.goals > 0 || p.assists > 0);
-  console.log('── Scoring ──');
-  printTable(
-    (scorers.length > 0 ? scorers : result.players) as unknown as Record<string, unknown>[],
-    ['number', 'name', 'goals', 'assists', 'points', 'shots', 'shotsOnTarget', 'shotPct'],
-  );
-
-  // Face-offs
-  const foPlayers = result.players.filter(p => p.faceoffs > 0);
-  if (foPlayers.length > 0) {
-    console.log('\n── Face-Offs ──');
-    printTable(foPlayers as unknown as Record<string, unknown>[], [
-      'number', 'name', 'faceoffs', 'faceoffWins', 'faceoffLosses', 'faceoffPct',
-    ]);
-  }
-
-  // Goalies
-  const goalies = result.players.filter(p => p.saves > 0 || p.goalsAllowed > 0);
-  if (goalies.length > 0) {
-    console.log('\n── Goalies ──');
-    printTable(goalies as unknown as Record<string, unknown>[], [
-      'number', 'name', 'saves', 'goalsAllowed', 'savePct',
-    ]);
-  }
+  // Server returns this exact text when null:
+  const payload = result ?? 'No data found for the specified game.';
+  printLlmPayload(payload);
+  validate('get_game_stats', validateGameStats(result as Record<string, unknown> | null));
 
   return s;
+}
+
+// ── Smoke test ────────────────────────────────────────────────────────────────
+
+async function runSmokeTest(
+  session: SessionState | null,
+  config: ReturnType<typeof loadConfig>
+): Promise<SessionState> {
+  console.log('\n' + hr('═'));
+  console.log('  SMOKE TEST — running all tools with default parameters');
+  console.log(hr('═'));
+
+  const tools: Array<{ name: string; fn: () => Promise<SessionState> }> = [
+    { name: 'list_seasons',     fn: () => toolListSeasons(session, config) },
+    { name: 'get_team_stats',   fn: () => toolGetTeamStats(session, config) },
+    { name: 'get_game_results', fn: () => toolGetGameResults(session, config) },
+    { name: 'get_player_stats', fn: () => toolGetPlayerStats(session, config) },
+    { name: 'get_game_stats',   fn: () => toolGetGameStats(session, config, 'latest') },
+  ];
+
+  const results: Array<{ name: string; status: 'PASS' | 'FAIL'; error?: string }> = [];
+
+  for (const { name, fn } of tools) {
+    try {
+      session = await fn();
+      results.push({ name, status: 'PASS' });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      results.push({ name, status: 'FAIL', error: msg });
+      console.error(`\n  [SMOKE TEST ERROR] ${name}: ${msg}`);
+    }
+  }
+
+  console.log('\n' + hr('═'));
+  console.log('  SMOKE TEST RESULTS');
+  console.log(hr('─'));
+  results.forEach(({ name, status, error }) => {
+    const icon = status === 'PASS' ? '✔' : '✖';
+    const line = `  ${icon}  ${status.padEnd(5)}  ${name}`;
+    console.log(error ? `${line}\n          └─ ${error}` : line);
+  });
+  console.log(hr('═'));
+
+  return session!;
+}
+
+// ── Menu ──────────────────────────────────────────────────────────────────────
+
+function printMenu(): void {
+  console.log('\n' + hr('─'));
+  console.log('  Hudl MCP Test CLI');
+  console.log(hr('─'));
+  console.log('  Tools (as the LLM calls them):');
+  console.log('    1.  list_seasons');
+  console.log('    2.  get_team_stats        [optional: season]');
+  console.log('    3.  get_game_results      [optional: season, limit]');
+  console.log('    4.  get_player_stats      [optional: season, playerName]');
+  console.log('    5.  get_game_stats        [optional: season, game]');
+  console.log(hr('─'));
+  console.log('  Diagnostics:');
+  console.log('    t.  Run all tools (smoke test)');
+  console.log(hr('─'));
+  console.log('    0.  Exit');
+  console.log(hr('─'));
 }
 
 // ── Main loop ─────────────────────────────────────────────────────────────────
@@ -272,9 +351,12 @@ async function main(): Promise<void> {
   const config = loadConfig();
   let session: SessionState | null = loadSession();
 
-  console.log('\nHudl MCP Test CLI');
-  console.log(`Team ID: ${config.teamId}`);
-  console.log('Note: first call will open a browser and log in (~15s)');
+  console.log('\n' + hr('═'));
+  console.log('  Hudl MCP Test CLI');
+  console.log(`  Team ID: ${config.teamId}`);
+  console.log('  Note: first call will open a browser and log in (~15s)');
+  console.log('  Output is split: [DEBUG] scraper logs  |  [LLM] exact model payload');
+  console.log(hr('═'));
 
   while (true) {
     printMenu();
@@ -283,52 +365,41 @@ async function main(): Promise<void> {
     try {
       switch (choice) {
         case '1':
-          session = await runRoster(session, config);
+          session = await toolListSeasons(session, config);
           break;
 
         case '2': {
-          const s2 = (await ask('  Season ID (leave blank for current): ')).trim();
-          session = await runPlayerStats(session, config, undefined, s2 || undefined);
+          const s = (await ask('  Season ID (leave blank for current): ')).trim();
+          session = await toolGetTeamStats(session, config, s || undefined);
           break;
         }
 
         case '3': {
-          const name = await ask('  Enter player name to search: ');
-          const s3 = (await ask('  Season ID (leave blank for current): ')).trim();
-          session = await runPlayerStats(session, config, name.trim(), s3 || undefined);
+          const s = (await ask('  Season ID (leave blank for current): ')).trim();
+          const n = (await ask('  Limit (leave blank for all): ')).trim();
+          const limit = n ? parseInt(n, 10) : undefined;
+          session = await toolGetGameResults(session, config, isNaN(limit!) ? undefined : limit, s || undefined);
           break;
         }
 
         case '4': {
-          const s4 = (await ask('  Season ID (leave blank for current): ')).trim();
-          session = await runTeamStats(session, config, s4 || undefined);
+          const name = (await ask('  Player name filter (leave blank for all): ')).trim();
+          const s = (await ask('  Season ID (leave blank for current): ')).trim();
+          session = await toolGetPlayerStats(session, config, name || undefined, s || undefined);
           break;
         }
 
         case '5': {
-          const s5 = (await ask('  Season ID (leave blank for current): ')).trim();
-          session = await runGameResults(session, config, undefined, s5 || undefined);
+          const s = (await ask('  Season ID (leave blank for current): ')).trim();
+          const g = (await ask('  Game ("latest", opponent name, date, or 0-based index) [default: latest]: ')).trim();
+          session = await toolGetGameStats(session, config, g || 'latest', s || undefined);
           break;
         }
 
-        case '6': {
-          const s6 = (await ask('  Season ID (leave blank for current): ')).trim();
-          const n = await ask('  How many games? ');
-          const limit = parseInt(n.trim(), 10);
-          session = await runGameResults(session, config, isNaN(limit) ? 5 : limit, s6 || undefined);
+        case 't':
+        case 'T':
+          session = await runSmokeTest(session, config);
           break;
-        }
-
-        case '7':
-          session = await runDiscoverSeasons(session, config);
-          break;
-
-        case '8': {
-          const s8 = (await ask('  Season ID (leave blank for current): ')).trim();
-          const gi = (await ask('  Game ("latest", opponent name, date, or 0-based index): ')).trim();
-          session = await runGameStats(session, config, gi || 'latest', s8 || undefined);
-          break;
-        }
 
         case '0':
           console.log('\nClosing browser and exiting...');
@@ -338,11 +409,12 @@ async function main(): Promise<void> {
           break;
 
         default:
-          console.log('  Invalid choice. Please enter a number from the menu.');
+          console.log('  Invalid choice.');
       }
     } catch (err) {
-      console.error('\n[ERROR]', err instanceof Error ? err.message : err);
-      console.error('You can try again — the session will be reused if still valid.\n');
+      console.error('\n' + hr('─'));
+      console.error('  [ERROR]', err instanceof Error ? err.message : err);
+      console.error(hr('─'));
     }
   }
 }

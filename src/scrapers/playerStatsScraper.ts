@@ -32,6 +32,7 @@ export async function scrapePlayerStats(
 
   const url = `https://www.hudl.com/reports/teams/${teamId}/stats?${qs}`;
   console.error(`[player-stats] Navigating to: ${url}`);
+  console.error(`[player-stats] Expecting ${ctx.uniqueGameIds.length} games for season ${ctx.seasonId}`);
 
   await page.setViewportSize({ width: 2560, height: 1440 });
   await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
@@ -39,11 +40,36 @@ export async function scrapePlayerStats(
     () => document.body.innerText.includes('Offense'),
     { timeout: 20000 }
   );
-  await page.waitForTimeout(1000);
+  await page.waitForTimeout(1500);
+
+  // Log the actual URL after navigation — a redirect here means Hudl ignored
+  // the season/game parameters and fell back to the current season
+  const landedUrl = page.url();
+  if (landedUrl !== url) {
+    console.error(`[player-stats] WARNING: Hudl redirected to a different URL`);
+    console.error(`[player-stats]   expected: ${url}`);
+    console.error(`[player-stats]   landed:   ${landedUrl}`);
+  }
 
   const text = await page.locator('body').innerText();
-  const players = parseAllStats(text);
 
+  // Log page preview so we can diagnose parse failures
+  console.error('[player-stats] Page text preview (first 80 lines):\n' +
+    text.split('\n').slice(0, 80).join('\n'));
+
+  // Detect how many games the page actually loaded
+  const gamesMatch = text.match(/(\d+)\s+Games?\b/i);
+  const pageGameCount = gamesMatch ? parseInt(gamesMatch[1], 10) : null;
+  if (pageGameCount !== null && pageGameCount !== ctx.uniqueGameIds.length) {
+    console.error(
+      `[player-stats] WARNING: page shows ${pageGameCount} games but expected ` +
+      `${ctx.uniqueGameIds.length} — Hudl may have loaded the wrong season`
+    );
+  } else if (pageGameCount !== null) {
+    console.error(`[player-stats] Page game count confirmed: ${pageGameCount}`);
+  }
+
+  const players = parseAllStats(text);
   console.error(`[player-stats] Parsed ${players.length} players`);
 
   if (playerNameFilter) {
@@ -73,14 +99,23 @@ function parseAllStats(text: string): PlayerStats[] {
   const players: Array<{ number: string; name: string; gamesPlayed: number }> = [];
   for (let i = 0; i + 2 < playerListLines.length; i += 3) {
     const jersey = playerListLines[i];
-    const name = playerListLines[i + 1];
-    const gp = parseInt(playerListLines[i + 2], 10) || 0;
-    if (/^\d+$/.test(jersey) && name && name.length > 1) {
+    const name   = playerListLines[i + 1];
+    const gp     = parseInt(playerListLines[i + 2], 10) || 0;
+    // jersey must be digits; name must contain at least one letter (filters
+    // out phantom entries like "22" or "15" that land in the name slot when
+    // extra GP-breakdown rows shift the triplet alignment on historical seasons)
+    if (/^\d+$/.test(jersey) && /[a-zA-Z]/.test(name) && name.length > 1) {
       players.push({ number: jersey, name, gamesPlayed: gp });
     }
   }
   if (players.length === 0) return [];
   const numPlayers = players.length;
+
+  console.error(
+    `[player-stats] Player list: ${numPlayers} players — ` +
+    `first: ${players[0]?.number} ${players[0]?.name}, ` +
+    `last: ${players[numPlayers - 1]?.number} ${players[numPlayers - 1]?.name}`
+  );
 
   // ── 2. Find all stat sections ─────────────────────────────────────────────
   // A section starts with a title-case word/phrase, followed by a tab-separated header line.
@@ -96,11 +131,24 @@ function parseAllStats(text: string): PlayerStats[] {
   sectionStarts.sort((a, b) => a.lineIdx - b.lineIdx);
 
   // ── 3. For each section, extract column data per player ───────────────────
+  //
+  // For historical seasons Hudl renders period-breakdown rows (e.g. "1st half",
+  // "2nd half") after each player's totals row.  These extra rows are plain
+  // numeric values with no label prefix, so content-matching won't find them.
+  //
+  // Strategy: measure the actual rows-per-player from the total value count,
+  // then use a fixed stride so we always land on the totals row for each player.
+  //
+  // The last section has no explicit end boundary (nextSectionIdx = lines.length),
+  // so end-of-page content would inflate the raw count.  We cap it first.
+
+  const MAX_ROWS_PER_PLAYER = 8; // WHOLEGAME + 2 halves + 4 quarters + OT
   const allSections = new Map<string, SectionData>();
 
   for (let si = 0; si < sectionStarts.length; si++) {
     const { name, lineIdx } = sectionStarts[si];
-    const nextSectionIdx = si + 1 < sectionStarts.length ? sectionStarts[si + 1].lineIdx : lines.length;
+    const nextSectionIdx =
+      si + 1 < sectionStarts.length ? sectionStarts[si + 1].lineIdx : lines.length;
 
     // Line after section name = tab-separated column headers
     const headerLine = lines[lineIdx + 1] ?? '';
@@ -108,17 +156,35 @@ function parseAllStats(text: string): PlayerStats[] {
     if (colHeaders.length === 0) continue;
 
     const numCols = colHeaders.length;
-    const valueLines = lines.slice(lineIdx + 2, nextSectionIdx);
 
-    // Build per-column arrays
+    // Cap to prevent end-of-page UI content from inflating the last section
+    const maxLines = numPlayers * numCols * MAX_ROWS_PER_PLAYER;
+    const rawValueLines = lines.slice(lineIdx + 2, nextSectionIdx).slice(0, maxLines);
+
+    // Detect rows-per-player: if Hudl rendered period breakdowns, the total
+    // line count will be a multiple of numPlayers * numCols greater than 1.
+    let rowsPerPlayer = 1;
+    if (rawValueLines.length > numPlayers * numCols && numPlayers > 0) {
+      const ratio = rawValueLines.length / (numPlayers * numCols);
+      rowsPerPlayer = Math.min(MAX_ROWS_PER_PLAYER, Math.max(1, Math.round(ratio)));
+    }
+    const stride = numCols * rowsPerPlayer;
+
+    if (rowsPerPlayer > 1) {
+      console.error(
+        `[player-stats] Section "${name}": detected ${rowsPerPlayer} rows/player ` +
+        `(period breakdown) — stride=${stride}, raw lines=${rawValueLines.length}`
+      );
+    }
+
     const sectionData: SectionData = new Map();
     for (const col of colHeaders) sectionData.set(col, []);
 
+    // Read only the first numCols values at each stride offset (the totals row)
     for (let playerIdx = 0; playerIdx < numPlayers; playerIdx++) {
-      const start = playerIdx * numCols;
+      const start = playerIdx * stride;
       for (let c = 0; c < numCols; c++) {
-        const val = valueLines[start + c] ?? '0';
-        sectionData.get(colHeaders[c])!.push(val);
+        sectionData.get(colHeaders[c])!.push(rawValueLines[start + c] ?? '0');
       }
     }
 

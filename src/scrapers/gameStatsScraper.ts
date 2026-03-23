@@ -59,7 +59,10 @@ export async function scrapeGameStats(
 
   // ── 2. Full game list ───────────────────────────────────────────────────────
   // scrapeGameResults returns games newest-first.
-  const allGames = await scrapeGameResults(page, session, teamId, onSessionUpdate, undefined, seasonId);
+  const rawGames = await scrapeGameResults(page, session, teamId, onSessionUpdate, undefined, seasonId);
+
+  // Filter out placeholder/sample entries that corrupt the game index
+  const allGames = rawGames.filter(g => g.opponent.toLowerCase() !== 'sample game');
 
   if (allGames.length === 0) {
     console.error('[game-stats] No game results found — cannot identify target game');
@@ -139,12 +142,13 @@ export async function scrapeGameStats(
           `[game-stats] Fuzzy matched "${gameIdentifier}" → vs ${allGames[bestIdx].opponent} on ${allGames[bestIdx].date} (edit distance: ${bestDist})`
         );
       } else {
-        // No match at all — return null with helpful diagnostics
+        // No match — throw a descriptive error so the AI can recover
         const available = allGames.map(g => `  ${g.date} vs ${g.opponent}`).join('\n');
-        console.error(
-          `[game-stats] No match for "${gameIdentifier}". Available games this season:\n${available}`
+        throw new Error(
+          `No game found matching "${gameIdentifier}" in this season.\n` +
+          `Available games:\n${available}\n` +
+          `Tip: use an exact date (e.g. "Apr 18") or full opponent name to target a specific game.`
         );
-        return null;
       }
     }
   }

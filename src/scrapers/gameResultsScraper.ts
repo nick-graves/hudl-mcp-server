@@ -31,17 +31,12 @@ export async function scrapeGameResults(
   ].filter(Boolean).join('&');
 
   const url = `https://www.hudl.com/reports/teams/${teamId}/stats?${qs}`;
-  console.error(`[game-results] Navigating to: ${url}`);
-
   await page.setViewportSize({ width: 2560, height: 1440 });
   await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
   await page.waitForTimeout(2000);
 
   const text = await page.locator('body').innerText();
-  console.error('[game-results] Page text (first 80 lines):\n' + text.split('\n').slice(0, 80).join('\n'));
-
   const results = parseGameResultsFromReportText(text);
-  console.error(`[game-results] Parsed ${results.length} games`);
 
   return limit ? results.slice(0, limit) : results;
 }

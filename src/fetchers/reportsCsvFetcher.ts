@@ -53,13 +53,19 @@ export async function getSeasonContext(
     timeout: 30000,
   });
 
-  // If a specific season was requested use it directly; otherwise read the
-  // season ID that Hudl redirected us to (current season).
+  // Always read the actual season ID from the redirected URL.
+  // When a label like "2025-2026" is passed, Hudl's client-side JS resolves it
+  // to a numeric ID in the redirect URL — use that numeric ID for all API calls.
+  const redirectedUrl = new URL(page.url());
+  const redirectedSeasonId = redirectedUrl.searchParams.get('S') ?? '';
+
   if (!seasonId) {
-    const url = new URL(page.url());
-    seasonId = url.searchParams.get('S') ?? '';
+    seasonId = redirectedSeasonId;
     if (!seasonId) throw new Error('Could not determine current season ID from reports redirect');
     console.error(`[season-ctx] Current season from redirect: ${seasonId}`);
+  } else if (redirectedSeasonId && redirectedSeasonId !== seasonId) {
+    console.error(`[season-ctx] Season label "${seasonId}" resolved to numeric ID "${redirectedSeasonId}" via redirect`);
+    seasonId = redirectedSeasonId;
   } else {
     console.error(`[season-ctx] Using requested season: ${seasonId}`);
   }

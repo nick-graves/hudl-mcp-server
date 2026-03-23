@@ -96,23 +96,31 @@ function parseAllStats(text: string): PlayerStats[] {
   if (jerseyHeaderIdx === -1 || offenseIdx === -1) return [];
 
   const playerListLines = lines.slice(jerseyHeaderIdx + 3, offenseIdx);
-  const players: Array<{ number: string; name: string; gamesPlayed: number }> = [];
+  // allRosterEntries includes every triplet (valid or not) so that
+  // numTableRows matches the actual row count in the stats sections.
+  // Players without a jersey number ("unknown" athletes) are kept as
+  // placeholders so stats indices don't shift for players below them.
+  const allRosterEntries: Array<{ number: string; name: string; gamesPlayed: number; valid: boolean }> = [];
   for (let i = 0; i + 2 < playerListLines.length; i += 3) {
     const jersey = playerListLines[i];
     const name   = playerListLines[i + 1];
     const gp     = parseInt(playerListLines[i + 2], 10) || 0;
-    // jersey must be digits; name must contain at least one letter (filters
-    // out phantom entries like "22" or "15" that land in the name slot when
-    // extra GP-breakdown rows shift the triplet alignment on historical seasons)
-    if (/^\d+$/.test(jersey) && /[a-zA-Z]/.test(name) && name.length > 1) {
-      players.push({ number: jersey, name, gamesPlayed: gp });
-    }
+    // A valid player has a numeric jersey and a name with letters. Phantom
+    // entries (e.g. "22" or "15" landing in the name slot due to GP-breakdown
+    // row shifts on historical seasons) are still recorded so the table row
+    // count stays accurate, but flagged invalid so they're excluded from output.
+    const valid = /^\d+$/.test(jersey) && /[a-zA-Z]/.test(name) && name.length > 1;
+    allRosterEntries.push({ number: jersey, name, gamesPlayed: gp, valid });
   }
+  const players = allRosterEntries.filter((e) => e.valid);
   if (players.length === 0) return [];
+  // Use the total roster row count (including unknowns) for stats stride
+  // calculations — the stats sections always have one row per roster entry.
+  const numTableRows = allRosterEntries.length;
   const numPlayers = players.length;
 
   console.error(
-    `[player-stats] Player list: ${numPlayers} players — ` +
+    `[player-stats] Player list: ${numPlayers} valid players (${numTableRows} total roster rows) — ` +
     `first: ${players[0]?.number} ${players[0]?.name}, ` +
     `last: ${players[numPlayers - 1]?.number} ${players[numPlayers - 1]?.name}`
   );
@@ -157,15 +165,16 @@ function parseAllStats(text: string): PlayerStats[] {
 
     const numCols = colHeaders.length;
 
-    // Cap to prevent end-of-page UI content from inflating the last section
-    const maxLines = numPlayers * numCols * MAX_ROWS_PER_PLAYER;
+    // Cap using numTableRows (all roster entries including unknowns) so we
+    // don't under-read the section when unknown athletes are present.
+    const maxLines = numTableRows * numCols * MAX_ROWS_PER_PLAYER;
     const rawValueLines = lines.slice(lineIdx + 2, nextSectionIdx).slice(0, maxLines);
 
     // Detect rows-per-player: if Hudl rendered period breakdowns, the total
-    // line count will be a multiple of numPlayers * numCols greater than 1.
+    // line count will be a multiple of numTableRows * numCols greater than 1.
     let rowsPerPlayer = 1;
-    if (rawValueLines.length > numPlayers * numCols && numPlayers > 0) {
-      const ratio = rawValueLines.length / (numPlayers * numCols);
+    if (rawValueLines.length > numTableRows * numCols && numTableRows > 0) {
+      const ratio = rawValueLines.length / (numTableRows * numCols);
       rowsPerPlayer = Math.min(MAX_ROWS_PER_PLAYER, Math.max(1, Math.round(ratio)));
     }
     const stride = numCols * rowsPerPlayer;
@@ -180,9 +189,11 @@ function parseAllStats(text: string): PlayerStats[] {
     const sectionData: SectionData = new Map();
     for (const col of colHeaders) sectionData.set(col, []);
 
-    // Read only the first numCols values at each stride offset (the totals row)
-    for (let playerIdx = 0; playerIdx < numPlayers; playerIdx++) {
-      const start = playerIdx * stride;
+    // Read stats for ALL roster rows (including unknowns) so that indices stay
+    // aligned with allRosterEntries — valid players look up by their original
+    // table index, not their position in the filtered players array.
+    for (let rowIdx = 0; rowIdx < numTableRows; rowIdx++) {
+      const start = rowIdx * stride;
       for (let c = 0; c < numCols; c++) {
         sectionData.get(colHeaders[c])!.push(rawValueLines[start + c] ?? '0');
       }
@@ -202,36 +213,41 @@ function parseAllStats(text: string): PlayerStats[] {
     section.get(key)?.[i] ?? '0';
   const int = (s: string) => parseInt(s, 10) || 0;
 
-  return players.map((player, i) => ({
-    playerId: `${player.name}-${player.number}`,
-    name: player.name,
-    number: player.number,
-    position: '',
-    gamesPlayed: player.gamesPlayed,
-    // Offense
-    goals: int(col(offense, 'G', i)),
-    assists: int(col(offense, 'A', i)),
-    points: int(col(offense, 'P', i)) || int(col(offense, 'G', i)) + int(col(offense, 'A', i)),
-    shots: int(col(offense, 'S', i)),
-    shotsOnTarget: int(col(offense, 'SOT', i)),
-    shotPct: col(offense, 'S%', i),
-    groundBalls: int(col(offense, 'GB', i)),
-    extraManGoals: int(col(offense, 'EMOG', i)),
-    // Face-offs
-    faceoffs: int(col(faceoffs, 'FO', i)),
-    faceoffWins: int(col(faceoffs, 'FOW', i)),
-    faceoffLosses: int(col(faceoffs, 'FOL', i)),
-    faceoffPct: col(faceoffs, 'FO%', i),
-    // Turnovers
-    turnovers: int(col(turnovers, 'T', i)),
-    forcedTurnovers: int(col(turnovers, 'FT', i)),
-    unforcedTurnovers: int(col(turnovers, 'UT', i)),
-    // Defense
-    causedTurnovers: int(col(defense, 'CT', i)),
-    goalsAllowed: int(col(defense, 'GA', i)),
-    saves: int(col(defense, 'SV', i)),
-    savePct: col(defense, 'SV%', i),
-    // Penalties
-    penalties: int(col(penalties, 'P', i)),
-  }));
+  // Map valid players using their original table index so stats align correctly
+  // even when unknown (unnumbered) athletes appear earlier in the roster.
+  return allRosterEntries
+    .map((entry, tableIdx) => ({ entry, tableIdx }))
+    .filter(({ entry }) => entry.valid)
+    .map(({ entry, tableIdx: i }) => ({
+      playerId: `${entry.name}-${entry.number}`,
+      name: entry.name,
+      number: entry.number,
+      position: '',
+      gamesPlayed: entry.gamesPlayed,
+      // Offense
+      goals: int(col(offense, 'G', i)),
+      assists: int(col(offense, 'A', i)),
+      points: int(col(offense, 'P', i)) || int(col(offense, 'G', i)) + int(col(offense, 'A', i)),
+      shots: int(col(offense, 'S', i)),
+      shotsOnTarget: int(col(offense, 'SOT', i)),
+      shotPct: col(offense, 'S%', i),
+      groundBalls: int(col(offense, 'GB', i)),
+      extraManGoals: int(col(offense, 'EMOG', i)),
+      // Face-offs
+      faceoffs: int(col(faceoffs, 'FO', i)),
+      faceoffWins: int(col(faceoffs, 'FOW', i)),
+      faceoffLosses: int(col(faceoffs, 'FOL', i)),
+      faceoffPct: col(faceoffs, 'FO%', i),
+      // Turnovers
+      turnovers: int(col(turnovers, 'T', i)),
+      forcedTurnovers: int(col(turnovers, 'FT', i)),
+      unforcedTurnovers: int(col(turnovers, 'UT', i)),
+      // Defense
+      causedTurnovers: int(col(defense, 'CT', i)),
+      goalsAllowed: int(col(defense, 'GA', i)),
+      saves: int(col(defense, 'SV', i)),
+      savePct: col(defense, 'SV%', i),
+      // Penalties
+      penalties: int(col(penalties, 'P', i)),
+    }));
 }

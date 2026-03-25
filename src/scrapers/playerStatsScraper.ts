@@ -249,5 +249,7 @@ function parseAllStats(text: string): PlayerStats[] {
       savePct: col(defense, 'SV%', i),
       // Penalties
       penalties: int(col(penalties, 'P', i)),
+      technicalPenalties: int(col(penalties, 'TP', i)),
+      personalPenalties: int(col(penalties, 'PP', i)),
     }));
 }

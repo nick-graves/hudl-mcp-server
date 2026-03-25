@@ -78,6 +78,8 @@ export interface PlayerStats {
   savePct: string;
   // Penalties
   penalties: number;
+  technicalPenalties: number;
+  personalPenalties: number;
   raw?: Record<string, unknown>;
 }
 

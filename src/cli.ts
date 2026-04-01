@@ -18,6 +18,7 @@ import { scrapePlayerStats } from './scrapers/playerStatsScraper.js';
 import { scrapeTeamStats } from './scrapers/teamStatsScraper.js';
 import { scrapeGameResults } from './scrapers/gameResultsScraper.js';
 import { scrapeGameStats } from './scrapers/gameStatsScraper.js';
+import { scrapeBoxScore } from './scrapers/boxScoreScraper.js';
 import { listAvailableSeasons } from './fetchers/reportsCsvFetcher.js';
 import type { SessionState } from './types.js';
 
@@ -157,6 +158,38 @@ function validateSeasons(seasons: unknown[]): ValidationResult {
   return { pass: errors.length === 0, warnings, errors };
 }
 
+function validateBoxScore(result: Record<string, unknown> | null): ValidationResult {
+  const warnings: string[] = [];
+  const errors: string[] = [];
+  if (!result) {
+    errors.push('Result is null — box score not found');
+    return { pass: false, warnings, errors };
+  }
+  const requiredKeys = ['scope', 'seasonId', 'rawText'];
+  requiredKeys.forEach((k) => {
+    if (result[k] === undefined || result[k] === null)
+      errors.push(`Field "${k}" is missing`);
+  });
+  if (!['game', 'season'].includes(String(result['scope'])))
+    errors.push(`scope must be "game" or "season", got "${result['scope']}"`);
+  if (result['scope'] === 'game') {
+    ['date', 'opponent', 'teamScore', 'opponentScore', 'result'].forEach((k) => {
+      if (result[k] === undefined || result[k] === null)
+        warnings.push(`Game-scoped field "${k}" is missing`);
+    });
+  }
+  const rawText = String(result['rawText'] ?? '');
+  if (rawText.length < 50) warnings.push('rawText is very short — page may not have loaded correctly');
+  const categories = result['categories'];
+  if (!Array.isArray(categories)) errors.push('"categories" is not an array');
+  else if (categories.length === 0) warnings.push('"categories" is empty — Team Stats section may not have parsed');
+  const periodScores = result['periodScores'];
+  if (!Array.isArray(periodScores)) errors.push('"periodScores" is not an array');
+  else if (result['scope'] === 'game' && periodScores.length === 0)
+    warnings.push('"periodScores" is empty — Period Stats section may not have parsed');
+  return { pass: errors.length === 0, warnings, errors };
+}
+
 function validateGameStats(result: Record<string, unknown> | null): ValidationResult {
   const warnings: string[] = [];
   const errors: string[] = [];
@@ -281,6 +314,26 @@ async function toolGetGameStats(
   return s;
 }
 
+async function toolGetBoxScore(
+  session: SessionState | null,
+  config: ReturnType<typeof loadConfig>,
+  game: string,
+  season?: string
+): Promise<SessionState> {
+  const params: Record<string, unknown> = { game };
+  if (season) params['season'] = season;
+  debugStart('get_box_score', params);
+
+  const { page, session: s } = await ensureAuthenticated(session, config);
+  const result = await scrapeBoxScore(page, s, config.teamId, saveSession, game, season);
+
+  const payload = result ?? 'No box score data found for the specified game.';
+  printLlmPayload(payload);
+  validate('get_box_score', validateBoxScore(result as Record<string, unknown> | null));
+
+  return s;
+}
+
 // ── Smoke test ────────────────────────────────────────────────────────────────
 
 async function runSmokeTest(
@@ -297,6 +350,7 @@ async function runSmokeTest(
     { name: 'get_game_results', fn: () => toolGetGameResults(session, config) },
     { name: 'get_player_stats', fn: () => toolGetPlayerStats(session, config) },
     { name: 'get_game_stats',   fn: () => toolGetGameStats(session, config, 'latest') },
+    { name: 'get_box_score',    fn: () => toolGetBoxScore(session, config, 'latest') },
   ];
 
   const results: Array<{ name: string; status: 'PASS' | 'FAIL'; error?: string }> = [];
@@ -337,6 +391,7 @@ function printMenu(): void {
   console.log('    3.  get_game_results      [optional: season, limit]');
   console.log('    4.  get_player_stats      [optional: season, playerName]');
   console.log('    5.  get_game_stats        [optional: season, game]');
+  console.log('    6.  get_box_score         [optional: season, game or "season"]');
   console.log(hr('─'));
   console.log('  Diagnostics:');
   console.log('    t.  Run all tools (smoke test)');
@@ -393,6 +448,13 @@ async function main(): Promise<void> {
           const s = (await ask('  Season ID (leave blank for current): ')).trim();
           const g = (await ask('  Game ("latest", opponent name, date, or 0-based index) [default: latest]: ')).trim();
           session = await toolGetGameStats(session, config, g || 'latest', s || undefined);
+          break;
+        }
+
+        case '6': {
+          const s = (await ask('  Season ID (leave blank for current): ')).trim();
+          const g = (await ask('  Game ("latest", "season", opponent name, date, or 0-based index) [default: latest]: ')).trim();
+          session = await toolGetBoxScore(session, config, g || 'latest', s || undefined);
           break;
         }
 

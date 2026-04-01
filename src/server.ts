@@ -7,6 +7,7 @@ import { scrapeTeamStats } from './scrapers/teamStatsScraper.js';
 import { scrapePlayerStats } from './scrapers/playerStatsScraper.js';
 import { scrapeGameResults } from './scrapers/gameResultsScraper.js';
 import { scrapeGameStats } from './scrapers/gameStatsScraper.js';
+import { scrapeBoxScore } from './scrapers/boxScoreScraper.js';
 import { listAvailableSeasons } from './fetchers/reportsCsvFetcher.js';
 
 export function createServer(config: HudlConfig): McpServer {
@@ -217,6 +218,55 @@ export function createServer(config: HudlConfig): McpServer {
           {
             type: 'text',
             text: result ? JSON.stringify(result, null, 2) : 'No data found for the specified game.',
+          },
+        ],
+      };
+    }
+  );
+
+  // ── get_box_score ──────────────────────────────────────────────────────────
+  server.registerTool(
+    'get_box_score',
+    {
+      description:
+        'Get the team-level box score comparison between Aloha and their opponent, ' +
+        'showing how each team performed across all statistical categories. ' +
+        'Use game="season" to get season averages across all games, or specify a ' +
+        'game the same way as get_game_stats: "latest" (default), opponent name ' +
+        '(e.g. "Beaverton"), date (e.g. "May 18"), or 0-based index newest-first. ' +
+        'Single-game results use totals; season results use per-game averages.',
+      inputSchema: {
+        game: z
+          .string()
+          .optional()
+          .describe(
+            'Game identifier: "latest" (default), "season" for full-season averages, ' +
+            'opponent name, date (e.g. "May 18"), or 0-based index newest-first.'
+          ),
+        season: z
+          .string()
+          .optional()
+          .describe('Season identifier. Defaults to current season.'),
+      },
+    },
+    async ({ game, season }) => {
+      const { page, session: freshSession } = await ensureAuthenticated(session, config);
+      session = freshSession;
+
+      const result = await scrapeBoxScore(
+        page,
+        session,
+        config.teamId,
+        onSessionUpdate,
+        game ?? 'latest',
+        season,
+      );
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: result ? JSON.stringify(result, null, 2) : 'No box score data found for the specified game.',
           },
         ],
       };

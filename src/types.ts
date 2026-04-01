@@ -94,3 +94,44 @@ export interface GameResult {
   raw?: Record<string, unknown>;
 }
 
+/** One row in the team box score comparison table. */
+export interface BoxScoreCategory {
+  category: string;
+  aloha: string;
+  opponent: string;
+}
+
+/** Goals scored by each team in one period. */
+export interface PeriodScore {
+  period: string;   // "1", "2", "3", "4", "OT", "Final"
+  aloha: number;
+  opponent: number;
+}
+
+/**
+ * Result returned by get_box_score.
+ * `scope === 'game'`   — single-game totals; uniqueGameId and game metadata are populated.
+ * `scope === 'season'` — season averages across all games; game metadata fields are absent.
+ */
+export interface BoxScoreResult {
+  scope: 'game' | 'season';
+  seasonId: string;
+  // Game-scoped fields (populated when scope === 'game')
+  uniqueGameId?: string;
+  date?: string;
+  opponent?: string;
+  homeAway?: 'home' | 'away' | 'neutral' | 'unknown';
+  teamScore?: number;
+  opponentScore?: number;
+  result?: 'W' | 'L' | 'T';
+  // Team abbreviations as shown on the box score page (e.g. "AHS", "CHS")
+  alohaAbbr?: string;
+  opponentAbbr?: string;
+  // Period-by-period goal breakdown (game scope only)
+  periodScores: PeriodScore[];
+  // Team-level comparison rows from the "Team Stats" section
+  categories: BoxScoreCategory[];
+  // Raw page text — retained for diagnostics
+  rawText: string;
+}
+

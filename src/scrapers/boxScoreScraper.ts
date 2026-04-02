@@ -223,10 +223,15 @@ async function navigateAndGetText(
 ): Promise<string> {
   const isSeasonScope = stype === 'AVERAGES';
 
+  // Build G[]= params: one per game ID (Hudl requires separate params, not comma-joined)
+  const gameParams = gameParam.split(',')
+    .map(id => `G%5B%5D=${encodeURIComponent(id.trim())}`)
+    .join('&');
+
   const qs = [
     `A%5B%5D=ALL`,
     `GRP=OVERALL`,
-    `G%5B%5D=${encodeURIComponent(gameParam)}`,
+    gameParams,
     `P%5B%5D=${encodeURIComponent(PERIODS)}`,
     `Q=${isSeasonScope ? 'all-season' : 'custom'}`,
     `S=${seasonId}`,

@@ -41,6 +41,23 @@ export async function getSeasonContext(
   teamId: string,
   seasonId?: string
 ): Promise<SeasonContext> {
+  // ── Label-to-numeric-ID resolution ──────────────────────────────────────────
+  // Hudl only recognises numeric season IDs (e.g. "3125067") in the ?S= param.
+  // If the caller passed a human-readable label like "2024-2025", resolve it to
+  // the matching numeric ID before navigating so Hudl loads the correct season.
+  if (seasonId && /^\d{4}-\d{4}$/.test(seasonId)) {
+    console.error(`[season-ctx] Label "${seasonId}" detected — resolving to numeric ID`);
+    const availableSeasons = await listAvailableSeasons(page, teamId);
+    const match = availableSeasons.find((s) => s.label.startsWith(seasonId!));
+    if (match) {
+      console.error(`[season-ctx] Resolved label "${seasonId}" → numeric ID "${match.seasonId}"`);
+      seasonId = match.seasonId;
+    } else {
+      console.error(`[season-ctx] Warning: no season found for label "${seasonId}" — falling through with original value`);
+    }
+  }
+  // ────────────────────────────────────────────────────────────────────────────
+
   // When a specific season is requested, include it in the navigation URL so
   // that Hudl's client-side JavaScript loads the correct season context and
   // populates the full stats URL (including G[]= game IDs) in the address bar.

@@ -22,8 +22,6 @@ export async function scrapeTeamStats(
     `S=${ctx.seasonId}`,
     `SD=${teamId}`,
     `SHT%5B%5D=ALL`,
-    `SST=GOALPERCENTAGE`,
-    `ST=0-Goals`,
     `STYPE=TOTALS`,
     `T=${teamId}`,
     `Z=ZONE`,
@@ -43,7 +41,7 @@ export async function scrapeTeamStats(
   await page.waitForTimeout(1000);
 
   const text = await page.locator('body').innerText();
-  console.error('[team-stats] Page text preview:\n' + text.split('\n').slice(0, 60).join('\n'));
+  console.error('[team-stats] Page text preview:\n' + text.split('\n').slice(0, 120).join('\n'));
 
   // Get win/loss record from the season-scoped GRP=GAME reports page
   const record = await fetchWinLossFromReportsPage(page, teamId, ctx.seasonId, ctx.uniqueGameIds);
@@ -59,8 +57,11 @@ function parseTeamStatsFromText(
   record: { wins: number; losses: number; ties: number }
 ): TeamStats {
   const lines = text.split('\n').map((l) => l.trim()).filter((l) => l.length > 0);
+  // Case-insensitive section finder
+  const findSection = (names: string[]) =>
+    lines.findIndex((l) => names.some(n => l.toLowerCase() === n.toLowerCase()));
 
-  const offenseIdx = lines.findIndex((l) => l === 'Offense');
+  const offenseIdx = findSection(['Offense']);
   if (offenseIdx === -1) {
     return emptyStats(seasonId, record);
   }
@@ -86,7 +87,7 @@ function parseTeamStatsFromText(
   const shotPct       = shotPctRaw ? `${shotPctNum}%` : '';
 
   // ── Defense section ───────────────────────────────────────────────────────
-  const defenseIdx = lines.findIndex((l) => l === 'Defense');
+  const defenseIdx = findSection(['Defense']);
   let goalsAgainst = 0, saves = 0, savePct = '';
   if (defenseIdx !== -1) {
     const defHeaders = (lines[defenseIdx + 1] ?? '').split('\t').map((h) => h.trim());
@@ -105,9 +106,7 @@ function parseTeamStatsFromText(
 
   // ── Face-offs section ─────────────────────────────────────────────────────
   let faceoffWins = 0, faceoffLosses = 0, faceoffTotal = 0, faceoffPct = '';
-  const foSectionIdx = lines.findIndex(
-    (l) => l === 'Face-offs' || l === 'Faceoffs' || l === 'Face Offs'
-  );
+  const foSectionIdx = findSection(['Face-offs', 'Faceoffs', 'Face Offs', 'Faceoff']);
   if (foSectionIdx !== -1) {
     const foHeaders = (lines[foSectionIdx + 1] ?? '').split('\t').map((h) => h.trim());
     const foValues  = lines.slice(foSectionIdx + 2);
@@ -127,9 +126,7 @@ function parseTeamStatsFromText(
 
   // ── Turnovers section ─────────────────────────────────────────────────────
   let turnovers = 0, causedTurnovers = 0;
-  const toSectionIdx = lines.findIndex(
-    (l) => l === 'Turnovers' || l === 'Turnover'
-  );
+  const toSectionIdx = findSection(['Turnovers', 'Turnover']);
   if (toSectionIdx !== -1) {
     const toHeaders = (lines[toSectionIdx + 1] ?? '').split('\t').map((h) => h.trim());
     const toValues  = lines.slice(toSectionIdx + 2);
@@ -145,9 +142,7 @@ function parseTeamStatsFromText(
 
   // ── Clears section ────────────────────────────────────────────────────────
   let clears = 0, clearAttempts = 0, clearPct = '';
-  const clrSectionIdx = lines.findIndex(
-    (l) => l === 'Clears' || l === 'Clear'
-  );
+  const clrSectionIdx = findSection(['Clears', 'Clear']);
   if (clrSectionIdx !== -1) {
     const clrHeaders = (lines[clrSectionIdx + 1] ?? '').split('\t').map((h) => h.trim());
     const clrValues  = lines.slice(clrSectionIdx + 2);
@@ -161,6 +156,24 @@ function parseTeamStatsFromText(
     clears        = clI >= 0 ? parseInt(cVal(clI), 10) || 0 : 0;
     clearAttempts = caI >= 0 ? parseInt(cVal(caI), 10) || 0 : 0;
     clearPct      = cpI >= 0 ? cVal(cpI) : '';
+  }
+
+  // ── Rides section ─────────────────────────────────────────────────────────
+  let rides = 0, rideAttempts = 0, ridePct = '';
+  const rideSectionIdx = findSection(['Rides', 'Ride']);
+  if (rideSectionIdx !== -1) {
+    const rideHeaders = (lines[rideSectionIdx + 1] ?? '').split('\t').map((h) => h.trim());
+    const rideValues  = lines.slice(rideSectionIdx + 2);
+    const rIdx = (name: string) => rideHeaders.findIndex((h) => h === name);
+    const rVal = (i: number)    => (i >= 0 ? rideValues[i] ?? '' : '');
+
+    const rI  = rIdx('RDE') >= 0 ? rIdx('RDE') : rIdx('R');
+    const raI = rIdx('RDEA') >= 0 ? rIdx('RDEA') : rIdx('RA');
+    const rpI = rideHeaders.findIndex(h => h.includes('%'));
+
+    rides        = rI  >= 0 ? parseInt(rVal(rI),  10) || 0 : 0;
+    rideAttempts = raI >= 0 ? parseInt(rVal(raI), 10) || 0 : 0;
+    ridePct      = rpI >= 0 ? rVal(rpI) : '';
   }
 
   const { wins, losses, ties } = record;
@@ -191,6 +204,9 @@ function parseTeamStatsFromText(
     clears:         clears        || undefined,
     clearAttempts:  clearAttempts || undefined,
     clearPct:       clearPct      || undefined,
+    rides:          rides         || undefined,
+    rideAttempts:   rideAttempts  || undefined,
+    ridePct:        ridePct       || undefined,
     raw: { assists },
   };
 }

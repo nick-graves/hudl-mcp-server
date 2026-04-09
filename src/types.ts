@@ -60,6 +60,9 @@ export interface TeamStats {
   clears?: number;
   clearAttempts?: number;
   clearPct?: string;
+  rides?: number;
+  rideAttempts?: number;
+  ridePct?: string;
   raw?: Record<string, unknown>;
 }
 

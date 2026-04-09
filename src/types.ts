@@ -43,6 +43,23 @@ export interface TeamStats {
   goalsAgainst: number;
   games: number;
   winPercentage: number;
+  // Extended stats — present when extractable from the Hudl stats page
+  shots?: number;
+  shotsOnTarget?: number;
+  shotPercentage?: string;
+  groundBalls?: number;
+  extraManGoals?: number;
+  saves?: number;
+  savePct?: string;
+  faceoffWins?: number;
+  faceoffLosses?: number;
+  faceoffTotal?: number;
+  faceoffPct?: string;
+  turnovers?: number;
+  causedTurnovers?: number;
+  clears?: number;
+  clearAttempts?: number;
+  clearPct?: string;
   raw?: Record<string, unknown>;
 }
 

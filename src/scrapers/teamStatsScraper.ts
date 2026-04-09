@@ -65,36 +65,102 @@ function parseTeamStatsFromText(
     return emptyStats(seasonId, record);
   }
 
+  // ── Offense section ───────────────────────────────────────────────────────
   // Header line: "G\tA\tP\tS\tSOT\tS%\tGB\tEMOG" (tab-separated)
-  const headerLine = lines[offenseIdx + 1] ?? '';
-  const headers = headerLine.split('\t').map((h) => h.trim());
+  // Values are one per line after the header, ordered by column index.
+  const offHeaderLine = lines[offenseIdx + 1] ?? '';
+  const offHeaders = offHeaderLine.split('\t').map((h) => h.trim());
+  const offValues  = lines.slice(offenseIdx + 2);
 
-  // Values — one per line starting after the header
-  // For OVERALL grouping there are two rows: Overall + Period breakdown
-  // Just grab first numCols values (Overall row)
-  const valueLines = lines.slice(offenseIdx + 2);
-  const numCols = headers.length;
+  const offIdx = (name: string) => offHeaders.findIndex((h) => h === name);
+  const offVal = (i: number)    => (i >= 0 ? offValues[i] ?? '' : '');
 
-  const idx = (name: string) => headers.findIndex((h) => h === name);
-  const val = (i: number) => (i >= 0 ? valueLines[i] ?? '' : '');
+  const goalsFor      = parseInt(offVal(offIdx('G')),    10) || 0;
+  const assists       = parseInt(offVal(offIdx('A')),    10) || 0;
+  const shots         = parseInt(offVal(offIdx('S')),    10) || 0;
+  const shotsOnTarget = parseInt(offVal(offIdx('SOT')),  10) || 0;
+  const groundBalls   = parseInt(offVal(offIdx('GB')),   10) || 0;
+  const extraManGoals = parseInt(offVal(offIdx('EMOG')), 10) || 0;
+  const shotPctRaw    = offVal(offHeaders.findIndex((h) => h.includes('%') && h !== 'FO%'));
+  const shotPctNum    = parseFloat(shotPctRaw) || 0;
+  const shotPct       = shotPctRaw ? `${shotPctNum}%` : '';
 
-  const goalsFor = parseInt(val(idx('G')), 10) || 0;
-  const assists = parseInt(val(idx('A')), 10) || 0;
-  const shots = parseInt(val(idx('S')), 10) || 0;
-  const shotsOnTarget = parseInt(val(idx('SOT')), 10) || 0;
-  const shotPctStr = val(headers.findIndex((h) => h.includes('%')));
-  const shotPct = parseFloat(shotPctStr) || 0;
-
-  // Goals against — look in Defense section
+  // ── Defense section ───────────────────────────────────────────────────────
   const defenseIdx = lines.findIndex((l) => l === 'Defense');
-  let goalsAgainst = 0;
+  let goalsAgainst = 0, saves = 0, savePct = '';
   if (defenseIdx !== -1) {
     const defHeaders = (lines[defenseIdx + 1] ?? '').split('\t').map((h) => h.trim());
-    const gaIdx = defHeaders.findIndex((h) => h === 'GA');
-    if (gaIdx >= 0) {
-      const defValues = lines.slice(defenseIdx + 2);
-      goalsAgainst = parseInt(defValues[gaIdx] ?? '0', 10) || 0;
-    }
+    const defValues  = lines.slice(defenseIdx + 2);
+    const dIdx = (name: string) => defHeaders.findIndex((h) => h === name);
+    const dVal = (i: number)    => (i >= 0 ? defValues[i] ?? '' : '');
+
+    const gaIdx  = dIdx('GA');
+    const svIdx  = dIdx('SV');
+    const svPctI = defHeaders.findIndex((h) => h.includes('%'));
+
+    goalsAgainst = gaIdx  >= 0 ? parseInt(dVal(gaIdx),  10) || 0 : 0;
+    saves        = svIdx  >= 0 ? parseInt(dVal(svIdx),  10) || 0 : 0;
+    savePct      = svPctI >= 0 ? dVal(svPctI) : '';
+  }
+
+  // ── Face-offs section ─────────────────────────────────────────────────────
+  let faceoffWins = 0, faceoffLosses = 0, faceoffTotal = 0, faceoffPct = '';
+  const foSectionIdx = lines.findIndex(
+    (l) => l === 'Face-offs' || l === 'Faceoffs' || l === 'Face Offs'
+  );
+  if (foSectionIdx !== -1) {
+    const foHeaders = (lines[foSectionIdx + 1] ?? '').split('\t').map((h) => h.trim());
+    const foValues  = lines.slice(foSectionIdx + 2);
+    const fIdx = (name: string) => foHeaders.findIndex((h) => h === name);
+    const fVal = (i: number)    => (i >= 0 ? foValues[i] ?? '' : '');
+
+    // Hudl column names vary — try common variants
+    const wI  = fIdx('W')  >= 0 ? fIdx('W')  : foHeaders.findIndex(h => /^FO.?W/i.test(h));
+    const lI  = fIdx('L')  >= 0 ? fIdx('L')  : foHeaders.findIndex(h => /^FO.?L/i.test(h));
+    const pI  = foHeaders.findIndex(h => h.includes('%'));
+
+    faceoffWins   = wI >= 0 ? parseInt(fVal(wI), 10) || 0 : 0;
+    faceoffLosses = lI >= 0 ? parseInt(fVal(lI), 10) || 0 : 0;
+    faceoffTotal  = faceoffWins + faceoffLosses;
+    faceoffPct    = pI >= 0 ? fVal(pI) : '';
+  }
+
+  // ── Turnovers section ─────────────────────────────────────────────────────
+  let turnovers = 0, causedTurnovers = 0;
+  const toSectionIdx = lines.findIndex(
+    (l) => l === 'Turnovers' || l === 'Turnover'
+  );
+  if (toSectionIdx !== -1) {
+    const toHeaders = (lines[toSectionIdx + 1] ?? '').split('\t').map((h) => h.trim());
+    const toValues  = lines.slice(toSectionIdx + 2);
+    const tIdx = (name: string) => toHeaders.findIndex((h) => h === name);
+    const tVal = (i: number)    => (i >= 0 ? toValues[i] ?? '' : '');
+
+    const tI  = tIdx('TO');
+    const ctI = tIdx('CT') >= 0 ? tIdx('CT') : tIdx('CTO');
+
+    turnovers       = tI  >= 0 ? parseInt(tVal(tI),  10) || 0 : 0;
+    causedTurnovers = ctI >= 0 ? parseInt(tVal(ctI), 10) || 0 : 0;
+  }
+
+  // ── Clears section ────────────────────────────────────────────────────────
+  let clears = 0, clearAttempts = 0, clearPct = '';
+  const clrSectionIdx = lines.findIndex(
+    (l) => l === 'Clears' || l === 'Clear'
+  );
+  if (clrSectionIdx !== -1) {
+    const clrHeaders = (lines[clrSectionIdx + 1] ?? '').split('\t').map((h) => h.trim());
+    const clrValues  = lines.slice(clrSectionIdx + 2);
+    const cIdx = (name: string) => clrHeaders.findIndex((h) => h === name);
+    const cVal = (i: number)    => (i >= 0 ? clrValues[i] ?? '' : '');
+
+    const clI  = cIdx('CLR') >= 0 ? cIdx('CLR') : cIdx('C');
+    const caI  = cIdx('CLRA') >= 0 ? cIdx('CLRA') : cIdx('CA');
+    const cpI  = clrHeaders.findIndex(h => h.includes('%'));
+
+    clears        = clI >= 0 ? parseInt(cVal(clI), 10) || 0 : 0;
+    clearAttempts = caI >= 0 ? parseInt(cVal(caI), 10) || 0 : 0;
+    clearPct      = cpI >= 0 ? cVal(cpI) : '';
   }
 
   const { wins, losses, ties } = record;
@@ -108,8 +174,24 @@ function parseTeamStatsFromText(
     games,
     goalsFor,
     goalsAgainst,
-    winPercentage: games > 0 ? Math.round((wins / games) * 1000) / 10 : 0,
-    raw: { assists, shots, shotsOnTarget, shotPercentage: `${shotPct}%` },
+    winPercentage:  games > 0 ? Math.round((wins / games) * 1000) / 10 : 0,
+    shots,
+    shotsOnTarget,
+    shotPercentage: shotPct || undefined,
+    groundBalls:    groundBalls   || undefined,
+    extraManGoals:  extraManGoals || undefined,
+    saves:          saves         || undefined,
+    savePct:        savePct       || undefined,
+    faceoffWins:    faceoffWins   || undefined,
+    faceoffLosses:  faceoffLosses || undefined,
+    faceoffTotal:   faceoffTotal  || undefined,
+    faceoffPct:     faceoffPct    || undefined,
+    turnovers:      turnovers     || undefined,
+    causedTurnovers: causedTurnovers || undefined,
+    clears:         clears        || undefined,
+    clearAttempts:  clearAttempts || undefined,
+    clearPct:       clearPct      || undefined,
+    raw: { assists },
   };
 }
 

@@ -2,6 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { HudlConfig, SessionState } from './types.js';
 import { loadSession, saveSession } from './cache/sessionCache.js';
+import { DataCache, TTL } from './cache/dataCache.js';
 import { ensureAuthenticated } from './auth/hudlAuth.js';
 import { scrapeTeamStats } from './scrapers/teamStatsScraper.js';
 import { scrapePlayerStats } from './scrapers/playerStatsScraper.js';
@@ -19,6 +20,9 @@ export function createServer(config: HudlConfig): McpServer {
     saveSession(updated);
   };
 
+  // Data cache — persists across restarts in .cache/ directory
+  const cache = new DataCache(process.env.HUDL_CACHE_DIR);
+
   const server = new McpServer(
     { name: 'hudl-mcp-server', version: '1.0.0' },
     {
@@ -28,6 +32,13 @@ export function createServer(config: HudlConfig): McpServer {
         'automation. The first call per session may take 10-20 seconds while the browser starts.',
     }
   );
+
+  // ── Helper: authenticate only when needed ──────────────────────────────────
+  async function authenticate() {
+    const { page, session: freshSession } = await ensureAuthenticated(session, config);
+    session = freshSession;
+    return page;
+  }
 
   // ── get_team_stats ─────────────────────────────────────────────────────────
   server.registerTool(
@@ -41,22 +52,26 @@ export function createServer(config: HudlConfig): McpServer {
           .string()
           .optional()
           .describe('Season identifier e.g. "2024-2025". Defaults to current season.'),
+        refresh: z
+          .boolean()
+          .optional()
+          .describe('Set true to bypass cache and re-fetch from Hudl.'),
       },
     },
-    async ({ season }) => {
-      const { page, session: freshSession } = await ensureAuthenticated(session, config);
-      session = freshSession;
+    async ({ season, refresh }) => {
+      const cacheKey = `get_team_stats|${season ?? 'current'}`;
+      const label    = `get_team_stats season=${season ?? 'current'}`;
 
-      const stats = await scrapeTeamStats(page, session, config.teamId, onSessionUpdate, season);
+      if (!refresh) {
+        const cached = cache.get(cacheKey);
+        if (cached) return { content: [{ type: 'text', text: JSON.stringify(cached, null, 2) }] };
+      }
 
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify(stats, null, 2),
-          },
-        ],
-      };
+      const page  = await authenticate();
+      const stats = await scrapeTeamStats(page, session!, config.teamId, onSessionUpdate, season);
+      cache.set(cacheKey, label, stats, TTL.SEASON_24H);
+
+      return { content: [{ type: 'text', text: JSON.stringify(stats, null, 2) }] };
     }
   );
 
@@ -76,29 +91,29 @@ export function createServer(config: HudlConfig): McpServer {
           .string()
           .optional()
           .describe('Season identifier. Defaults to current season.'),
+        refresh: z
+          .boolean()
+          .optional()
+          .describe('Set true to bypass cache and re-fetch from Hudl.'),
       },
     },
-    async ({ playerName, season }) => {
-      const { page, session: freshSession } = await ensureAuthenticated(session, config);
-      session = freshSession;
+    async ({ playerName, season, refresh }) => {
+      const filterKey = playerName ? playerName.toLowerCase().replace(/\s+/g, '_') : 'ALL';
+      const cacheKey  = `get_player_stats|${season ?? 'current'}|${filterKey}`;
+      const label     = `get_player_stats season=${season ?? 'current'} filter=${filterKey}`;
 
+      if (!refresh) {
+        const cached = cache.get(cacheKey);
+        if (cached) return { content: [{ type: 'text', text: JSON.stringify(cached, null, 2) }] };
+      }
+
+      const page    = await authenticate();
       const players = await scrapePlayerStats(
-        page,
-        session,
-        config.teamId,
-        onSessionUpdate,
-        playerName,
-        season
+        page, session!, config.teamId, onSessionUpdate, playerName, season
       );
+      cache.set(cacheKey, label, players, TTL.SEASON_24H);
 
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify(players, null, 2),
-          },
-        ],
-      };
+      return { content: [{ type: 'text', text: JSON.stringify(players, null, 2) }] };
     }
   );
 
@@ -119,29 +134,29 @@ export function createServer(config: HudlConfig): McpServer {
           .positive()
           .optional()
           .describe('Maximum number of games to return. Omit for all games.'),
+        refresh: z
+          .boolean()
+          .optional()
+          .describe('Set true to bypass cache and re-fetch from Hudl.'),
       },
     },
-    async ({ limit, season }) => {
-      const { page, session: freshSession } = await ensureAuthenticated(session, config);
-      session = freshSession;
+    async ({ limit, season, refresh }) => {
+      // Include limit in key — different limits produce different result sets
+      const cacheKey = `get_game_results|${season ?? 'current'}|limit=${limit ?? 'all'}`;
+      const label    = `get_game_results season=${season ?? 'current'} limit=${limit ?? 'all'}`;
 
+      if (!refresh) {
+        const cached = cache.get(cacheKey);
+        if (cached) return { content: [{ type: 'text', text: JSON.stringify(cached, null, 2) }] };
+      }
+
+      const page  = await authenticate();
       const games = await scrapeGameResults(
-        page,
-        session,
-        config.teamId,
-        onSessionUpdate,
-        limit,
-        season
+        page, session!, config.teamId, onSessionUpdate, limit, season
       );
+      cache.set(cacheKey, label, games, TTL.SEASON_24H);
 
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify(games, null, 2),
-          },
-        ],
-      };
+      return { content: [{ type: 'text', text: JSON.stringify(games, null, 2) }] };
     }
   );
 
@@ -154,22 +169,27 @@ export function createServer(config: HudlConfig): McpServer {
         'Returns seasonId, label (e.g. "2024-2025 Season"), and seasonYear. ' +
         'Use the seasonId value with get_team_stats, get_player_stats, or get_game_results ' +
         'to retrieve data for a specific historical season.',
-      inputSchema: {},
+      inputSchema: {
+        refresh: z
+          .boolean()
+          .optional()
+          .describe('Set true to bypass cache and re-fetch from Hudl.'),
+      },
     },
-    async (_args) => {
-      const { page, session: freshSession } = await ensureAuthenticated(session, config);
-      session = freshSession;
+    async ({ refresh }) => {
+      const cacheKey = `list_seasons|${config.teamId}`;
+      const label    = `list_seasons teamId=${config.teamId}`;
 
+      if (!refresh) {
+        const cached = cache.get(cacheKey);
+        if (cached) return { content: [{ type: 'text', text: JSON.stringify(cached, null, 2) }] };
+      }
+
+      const page    = await authenticate();
       const seasons = await listAvailableSeasons(page, config.teamId);
+      cache.set(cacheKey, label, seasons, TTL.SEASON_24H);
 
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify(seasons, null, 2),
-          },
-        ],
-      };
+      return { content: [{ type: 'text', text: JSON.stringify(seasons, null, 2) }] };
     }
   );
 
@@ -198,28 +218,42 @@ export function createServer(config: HudlConfig): McpServer {
           .string()
           .optional()
           .describe('Season identifier. Defaults to current season.'),
+        refresh: z
+          .boolean()
+          .optional()
+          .describe('Set true to bypass cache and re-fetch from Hudl.'),
       },
     },
-    async ({ game, season }) => {
-      const { page, session: freshSession } = await ensureAuthenticated(session, config);
-      session = freshSession;
+    async ({ game, season, refresh }) => {
+      const gameId   = game ?? 'latest';
+      const cacheKey = `get_game_stats|${season ?? 'current'}|${gameId}`;
+      const label    = `get_game_stats season=${season ?? 'current'} game=${gameId}`;
 
+      // "latest" and numeric indices are volatile (point to different games as
+      // the season progresses) — only cache stable identifiers like opponent
+      // names, dates, or resolved uniqueGameIds.
+      const isStable = gameId !== 'latest' && !/^\d+$/.test(gameId);
+
+      if (!refresh && isStable) {
+        const cached = cache.get(cacheKey);
+        if (cached) return { content: [{ type: 'text', text: JSON.stringify(cached, null, 2) }] };
+      }
+
+      const page   = await authenticate();
       const result = await scrapeGameStats(
-        page,
-        session,
-        config.teamId,
-        onSessionUpdate,
-        game ?? 'latest',
-        season,
+        page, session!, config.teamId, onSessionUpdate, gameId, season
       );
 
+      // Cache completed games permanently; use TTL_24H only for "latest"
+      if (result && isStable) {
+        cache.set(cacheKey, label, result, TTL.GAME_PERMANENT);
+      }
+
       return {
-        content: [
-          {
-            type: 'text',
-            text: result ? JSON.stringify(result, null, 2) : 'No data found for the specified game.',
-          },
-        ],
+        content: [{
+          type: 'text',
+          text: result ? JSON.stringify(result, null, 2) : 'No data found for the specified game.',
+        }],
       };
     }
   );
@@ -247,28 +281,108 @@ export function createServer(config: HudlConfig): McpServer {
           .string()
           .optional()
           .describe('Season identifier. Defaults to current season.'),
+        refresh: z
+          .boolean()
+          .optional()
+          .describe('Set true to bypass cache and re-fetch from Hudl.'),
       },
     },
-    async ({ game, season }) => {
-      const { page, session: freshSession } = await ensureAuthenticated(session, config);
-      session = freshSession;
+    async ({ game, season, refresh }) => {
+      const gameId   = game ?? 'latest';
+      const cacheKey = `get_box_score|${season ?? 'current'}|${gameId}`;
+      const label    = `get_box_score season=${season ?? 'current'} game=${gameId}`;
 
+      const isStable = gameId !== 'latest' && !/^\d+$/.test(gameId);
+      const isSeasonScope = gameId === 'season';
+
+      if (!refresh && isStable) {
+        const cached = cache.get(cacheKey);
+        if (cached) return { content: [{ type: 'text', text: JSON.stringify(cached, null, 2) }] };
+      }
+
+      const page   = await authenticate();
       const result = await scrapeBoxScore(
-        page,
-        session,
-        config.teamId,
-        onSessionUpdate,
-        game ?? 'latest',
-        season,
+        page, session!, config.teamId, onSessionUpdate, gameId, season
       );
 
+      if (result && isStable) {
+        // Season-scope box scores accumulate; game box scores are permanent
+        const ttl = isSeasonScope ? TTL.SEASON_24H : TTL.GAME_PERMANENT;
+        cache.set(cacheKey, label, result, ttl);
+      }
+
       return {
-        content: [
-          {
-            type: 'text',
-            text: result ? JSON.stringify(result, null, 2) : 'No box score data found for the specified game.',
-          },
-        ],
+        content: [{
+          type: 'text',
+          text: result ? JSON.stringify(result, null, 2) : 'No box score data found for the specified game.',
+        }],
+      };
+    }
+  );
+
+  // ── clear_cache ────────────────────────────────────────────────────────────
+  server.registerTool(
+    'clear_cache',
+    {
+      description:
+        'Invalidate cached Hudl data so the next request re-fetches from Hudl. ' +
+        'Use scope="all" to wipe everything. Use scope="season" with a season label ' +
+        '(e.g. "2024-2025") to clear all entries for that season. Use scope="game" ' +
+        'with a game identifier (opponent name or date) to clear a single game. ' +
+        'Omitting scope defaults to "all". ' +
+        'After clearing, the next tool call will re-scrape Hudl and rebuild the cache.',
+      inputSchema: {
+        scope: z
+          .enum(['all', 'season', 'game'])
+          .optional()
+          .describe('"all" (default) = clear everything; "season" = clear one season; "game" = clear one game.'),
+        identifier: z
+          .string()
+          .optional()
+          .describe(
+            'Required when scope is "season" or "game". ' +
+            'For season: a label like "2024-2025". ' +
+            'For game: an opponent name (e.g. "Oregon City") or date (e.g. "Mar 17").'
+          ),
+        list: z
+          .boolean()
+          .optional()
+          .describe('Set true to list current cache contents without clearing anything.'),
+      },
+    },
+    async ({ scope, identifier, list }) => {
+      // List mode — no deletion
+      if (list) {
+        const entries = cache.list();
+        if (entries.length === 0) {
+          return { content: [{ type: 'text', text: 'Cache is empty.' }] };
+        }
+        const lines = entries.map(e =>
+          `• ${e.key}  |  cached ${e.cachedAt}  |  ttl: ${e.ttl}${e.expired ? '  ⚠ expired' : ''}`
+        );
+        return { content: [{ type: 'text', text: `Cache contents (${entries.length} entries):\n\n${lines.join('\n')}` }] };
+      }
+
+      const resolvedScope = scope ?? 'all';
+
+      if (resolvedScope === 'all') {
+        const n = cache.invalidate('all');
+        return { content: [{ type: 'text', text: `Cache cleared — ${n} entries removed. All subsequent requests will re-fetch from Hudl.` }] };
+      }
+
+      if (!identifier) {
+        return { content: [{ type: 'text', text: `Please provide an identifier when scope is "${resolvedScope}". Example: identifier="2024-2025" or identifier="Oregon City".` }] };
+      }
+
+      const n = cache.invalidateMatching(identifier);
+      const noun = resolvedScope === 'season' ? `season "${identifier}"` : `game "${identifier}"`;
+      return {
+        content: [{
+          type: 'text',
+          text: n > 0
+            ? `Cleared ${n} cache entries for ${noun}. Next request will re-fetch from Hudl.`
+            : `No cache entries found matching "${identifier}". Nothing was cleared.`,
+        }],
       };
     }
   );

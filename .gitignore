@@ -10,6 +10,7 @@ dist/
 # Cached API/scrape data
 discovery-results.json
 game-results-*.json
+.cache/
 
 # Claude Code internals
 .claude/

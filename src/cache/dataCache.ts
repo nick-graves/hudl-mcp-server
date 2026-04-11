@@ -6,11 +6,13 @@ import * as crypto from 'crypto';
 export const TTL = {
   /** Completed game — stats are final, never expire automatically. */
   GAME_PERMANENT: 0,
+  /** Completed prior season — all stats are final, never expire. */
+  SEASON_PERMANENT: 0,
   /** Season-accumulating data — refresh daily during active season. */
   SEASON_24H: 24 * 60 * 60 * 1000,
 } as const;
 
-interface CacheEntry<T> {
+export interface CacheEntry<T> {
   data: T;
   cachedAt: number;   // epoch ms
   ttl: number;        // ms; 0 = no expiry
@@ -122,6 +124,25 @@ export class DataCache {
       }
     });
   }
+
+  /** Return all entries including full data payload — used for cache inspect. */
+  listAll(): Array<{ index: number; key: string; cachedAt: string; ttl: string; expired: boolean; data: unknown }> {
+    return this._files().map((f, i) => {
+      try {
+        const entry: CacheEntry<unknown> = JSON.parse(
+          fs.readFileSync(path.join(this.dir, f), 'utf8')
+        );
+        const expired = this._isExpired(entry);
+        const ttlLabel = entry.ttl === 0 ? 'permanent' : `${entry.ttl / 3600000}h`;
+        return { index: i, key: entry.key, cachedAt: new Date(entry.cachedAt).toLocaleString(), ttl: ttlLabel, expired, data: entry.data };
+      } catch {
+        return { index: i, key: f, cachedAt: '?', ttl: '?', expired: false, data: null };
+      }
+    });
+  }
+
+  /** Return the cache directory path. */
+  getDir(): string { return this.dir; }
 
   // ── Internals ──────────────────────────────────────────────────────────────
 

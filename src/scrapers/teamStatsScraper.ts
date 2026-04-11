@@ -207,7 +207,7 @@ function parseTeamStatsFromText(
     rides:          rides         || undefined,
     rideAttempts:   rideAttempts  || undefined,
     ridePct:        ridePct       || undefined,
-    raw: { assists },
+    raw: { assists, _pageLines: lines },
   };
 }
 

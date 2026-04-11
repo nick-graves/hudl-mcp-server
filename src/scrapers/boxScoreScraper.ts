@@ -195,9 +195,10 @@ async function scrapeSeasonBoxScore(
   seasonId:       string,
   uniqueGameIds:  string[],
 ): Promise<BoxScoreResult> {
-  // Pass all game IDs comma-joined — Hudl aggregates them server-side
-  const allGamesId = uniqueGameIds.join(',');
-  const rawText = await navigateAndGetText(page, teamId, seasonId, allGamesId, 'AVERAGES');
+  // Use Q=all-season with TOTALS (same pattern as teamStatsScraper) to get
+  // season-aggregate box score. Passing individual G[]= params causes the page
+  // to render only a loading skeleton; omitting them with Q=all-season works.
+  const rawText = await navigateAndGetText(page, teamId, seasonId, '', 'TOTALS');
 
   const parsed = parseBoxScorePage(rawText);
 
@@ -221,12 +222,17 @@ async function navigateAndGetText(
   gameParam:  string,   // single uniqueGameId OR comma-joined list for season
   stype:      'TOTALS' | 'AVERAGES',
 ): Promise<string> {
-  const isSeasonScope = stype === 'AVERAGES';
+  // Season scope: gameParam is empty — use Q=all-season with no G[]= params
+  // (same pattern as teamStatsScraper which successfully returns season totals).
+  // Game scope: gameParam is a single uniqueGameId.
+  const isSeasonScope = gameParam === '';
 
-  // Build G[]= params: one per game ID (Hudl requires separate params, not comma-joined)
-  const gameParams = gameParam.split(',')
-    .map(id => `G%5B%5D=${encodeURIComponent(id.trim())}`)
-    .join('&');
+  const gameParams = isSeasonScope
+    ? ''
+    : gameParam.split(',')
+        .map(id => `G%5B%5D=${encodeURIComponent(id.trim())}`)
+        .filter(s => s !== 'G%5B%5D=')   // guard against empty IDs
+        .join('&');
 
   const qs = [
     `A%5B%5D=ALL`,
@@ -237,22 +243,27 @@ async function navigateAndGetText(
     `S=${seasonId}`,
     `SD=${teamId}`,
     `SHT%5B%5D=ALL`,
-    `ST=0-Goals`,
     `STYPE=${stype}`,
     `T=${teamId}`,
     `Z=ZONE`,
-  ].join('&');
+  ].filter(Boolean).join('&');
 
   const url = `https://www.hudl.com/reports/teams/${teamId}/box-score?${qs}`;
   console.error(`[box-score] Navigating to: ${url}`);
 
   await page.setViewportSize({ width: 2560, height: 1440 });
   await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
-  await page.waitForTimeout(2000);
+
+  // Wait for actual stat content to render (not just the loading skeleton)
+  await page.waitForFunction(
+    () => document.body.innerText.includes('Team Stats') || document.body.innerText.includes('Goals'),
+    { timeout: 20000 }
+  ).catch(() => console.error('[box-score] Timed out waiting for Team Stats — proceeding anyway'));
+  await page.waitForTimeout(1000);
 
   const text = await page.locator('body').innerText();
-  console.error('[box-score] Page text preview (first 80 lines):\n' +
-    text.split('\n').slice(0, 80).join('\n'));
+  console.error('[box-score] Page text preview (first 120 lines):\n' +
+    text.split('\n').slice(0, 120).join('\n'));
 
   return text;
 }

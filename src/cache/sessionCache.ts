@@ -1,8 +1,10 @@
 import { readFileSync, writeFileSync, existsSync } from 'fs';
-import { resolve } from 'path';
+import { resolve, dirname } from 'path';
+import { fileURLToPath } from 'url';
 import type { SessionState, DiscoveredEndpoint, EndpointPurpose } from '../types.js';
 
-const SESSION_FILE = resolve(process.cwd(), '.hudl-session.json');
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const SESSION_FILE = resolve(__dirname, '..', '.hudl-session.json');
 const SESSION_TTL_MS = 4 * 60 * 60 * 1000; // 4 hours
 
 export function loadSession(): SessionState | null {

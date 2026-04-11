@@ -11,6 +11,7 @@
 
 import { createInterface } from 'readline';
 import { loadConfig } from './config.js';
+import { DataCache, TTL } from './cache/dataCache.js';
 import { loadSession, saveSession } from './cache/sessionCache.js';
 import { ensureAuthenticated } from './auth/hudlAuth.js';
 import { closeBrowser } from './browser/browserManager.js';
@@ -25,6 +26,10 @@ import type { SessionState } from './types.js';
 // ── Readline helpers ──────────────────────────────────────────────────────────
 
 const rl = createInterface({ input: process.stdin, output: process.stdout });
+
+// ── Cache instance (same dir as MCP server uses) ─────────────────────────────
+// Initialised after dotenv is loaded by loadConfig()
+let cache: DataCache;
 
 function ask(question: string): Promise<string> {
   return new Promise((resolve) => rl.question(question, resolve));
@@ -379,6 +384,240 @@ async function runSmokeTest(
   return session!;
 }
 
+// ── Cache management ──────────────────────────────────────────────────────────
+
+function printCacheList(entries: ReturnType<DataCache['listAll']>): void {
+  if (entries.length === 0) {
+    console.log('  (cache is empty)');
+    return;
+  }
+  console.log('\n' + hr('─'));
+  console.log(`  Cache — ${entries.length} entries  (dir: ${cache.getDir()})`);
+  console.log(hr('─'));
+  // Group by type prefix for readability
+  const byType: Record<string, typeof entries> = {};
+  for (const e of entries) {
+    const prefix = e.key.split(' ')[0].replace('|', ' ').split(' ')[0];
+    (byType[prefix] ??= []).push(e);
+  }
+  let globalIdx = 0;
+  for (const [type, group] of Object.entries(byType).sort()) {
+    console.log(`\n  ── ${type} (${group.length})`);
+    for (const e of group) {
+      const flag = e.expired ? ' [EXPIRED]' : '';
+      console.log(`    [${String(globalIdx).padStart(2)}]  ${e.ttl.padEnd(10)}  ${e.cachedAt.padEnd(22)}  ${e.key}${flag}`);
+      e.index = globalIdx; // rewrite index to global for later lookup
+      globalIdx++;
+    }
+  }
+  console.log('\n' + hr('─'));
+}
+
+async function cacheInspect(): Promise<void> {
+  const entries = cache.listAll();
+  printCacheList(entries);
+  if (entries.length === 0) return;
+  // Re-flatten to match printed global indices
+  const flat: typeof entries = [];
+  const byType: Record<string, typeof entries> = {};
+  for (const e of entries) {
+    const prefix = e.key.split(' ')[0].replace('|', ' ').split(' ')[0];
+    (byType[prefix] ??= []).push(e);
+  }
+  for (const group of Object.values(byType).sort((a, b) => (a[0]?.key ?? '').localeCompare(b[0]?.key ?? ''))) {
+    for (const e of group) flat.push(e);
+  }
+  const input = (await ask('  Entry number to inspect (blank to cancel): ')).trim();
+  if (!input) return;
+  const idx = parseInt(input, 10);
+  if (isNaN(idx) || idx < 0 || idx >= flat.length) {
+    console.log('  Invalid index.');
+    return;
+  }
+  const entry = flat[idx];
+  console.log('\n' + hr('─'));
+  console.log(`  key:      ${entry.key}`);
+  console.log(`  cachedAt: ${entry.cachedAt}`);
+  console.log(`  ttl:      ${entry.ttl}`);
+  console.log(`  expired:  ${entry.expired}`);
+  console.log(hr('─'));
+  console.log(JSON.stringify(entry.data, null, 2));
+  console.log(hr('─'));
+}
+
+async function cacheClear(): Promise<void> {
+  console.log('\n  Clear options:');
+  console.log('    1.  Clear ALL entries');
+  console.log('    2.  Clear by season label (e.g. "2024-2025")');
+  console.log('    3.  Clear by keyword (e.g. "Beaverton", "box_score")');
+  console.log('    0.  Cancel');
+  const choice = (await ask('  Choice: ')).trim();
+  if (choice === '1') {
+    const confirm = (await ask('  Confirm clear ALL? (yes/no): ')).trim().toLowerCase();
+    if (confirm !== 'yes') { console.log('  Cancelled.'); return; }
+    const n = cache.invalidate('all');
+    console.log(`  Cleared ${n} entries.`);
+  } else if (choice === '2') {
+    const label = (await ask('  Season label: ')).trim();
+    if (!label) return;
+    const n = cache.invalidateMatching(label);
+    console.log(`  Cleared ${n} entries matching "${label}".`);
+  } else if (choice === '3') {
+    const kw = (await ask('  Keyword: ')).trim();
+    if (!kw) return;
+    const n = cache.invalidateMatching(kw);
+    console.log(`  Cleared ${n} entries matching "${kw}".`);
+  } else {
+    console.log('  Cancelled.');
+  }
+}
+
+// ── Season warmer ─────────────────────────────────────────────────────────────
+
+async function warmSeason(
+  session: SessionState | null,
+  config: ReturnType<typeof loadConfig>
+): Promise<SessionState> {
+  const seasonInput = (await ask('  Season label (e.g. "2024-2025", blank = current): ')).trim();
+  const seasonArg   = seasonInput || undefined;
+  const seasonLabel = seasonArg ?? 'current';
+
+  const completed = (await ask('  Is this a completed/prior season? (y/n): ')).trim().toLowerCase();
+  const isPrior   = completed === 'y' || completed === 'yes';
+  const aggTTL    = isPrior ? TTL.SEASON_PERMANENT : TTL.SEASON_24H;
+
+  console.log(`\n  Warming season: ${seasonLabel}  (${isPrior ? 'prior — all permanent' : 'current — aggregates expire 24h'})`);
+  console.log(hr('─'));
+
+  // ── Step 1: game results ──────────────────────────────────────────────────
+  const grKey   = `get_game_results|${seasonLabel}|limit=all`;
+  const grLabel = `get_game_results season=${seasonLabel} limit=all`;
+  let games: unknown[];
+
+  const cachedGames = cache.get<unknown[]>(grKey);
+  if (cachedGames) {
+    games = cachedGames;
+    console.log(`  [skip] game_results — already cached (${games.length} games)`);
+  } else {
+    console.log('  [fetch] game_results...');
+    const { page, session: s } = await ensureAuthenticated(session, config);
+    session = s;
+    games = await scrapeGameResults(page, session, config.teamId, (sv) => { session = sv; }, undefined, seasonArg);
+    cache.set(grKey, grLabel, games, aggTTL);
+    console.log(`  [done]  game_results — ${games.length} games cached`);
+  }
+
+  // ── Step 2: per-game stats and box scores ─────────────────────────────────
+  const realGames = (games as Array<Record<string, unknown>>).filter((g) => (g['opponent'] as string)?.toLowerCase() !== 'sample game');
+  console.log(`\n  Warming ${realGames.length} games...`);
+
+  let fetchCount = 0;
+  let skipCount  = 0;
+
+  for (const game of realGames) {
+    const dateId   = game['date'] as string;
+    const opponent = game['opponent'] as string;
+
+    // Ensure we have a live page/session for each scrape
+    const getPage = async () => {
+      const { page, session: s } = await ensureAuthenticated(session, config);
+      session = s;
+      return page;
+    };
+
+    // game_stats
+    const gsKey   = `get_game_stats|${seasonLabel}|${dateId}`;
+    const gsLabel = `get_game_stats season=${seasonLabel} game=${dateId}`;
+    if (cache.get(gsKey)) {
+      skipCount++;
+      console.log(`  [skip] game_stats  ${dateId} vs ${opponent}`);
+    } else {
+      console.log(`  [fetch] game_stats  ${dateId} vs ${opponent}...`);
+      try {
+        const page = await getPage();
+        const result = await scrapeGameStats(page, session!, config.teamId, (sv) => { session = sv; }, dateId, seasonArg);
+        if (result) {
+          cache.set(gsKey, gsLabel, result, TTL.GAME_PERMANENT);
+          fetchCount++;
+          console.log(`  [done]  game_stats  ${dateId} vs ${opponent}`);
+        } else {
+          console.log(`  [warn]  game_stats  ${dateId} vs ${opponent} — null result`);
+        }
+      } catch (err) {
+        console.error(`  [error] game_stats  ${dateId} vs ${opponent}: ${err instanceof Error ? err.message : err}`);
+      }
+    }
+
+    // box_score
+    const bsKey   = `get_box_score|${seasonLabel}|${dateId}`;
+    const bsLabel = `get_box_score season=${seasonLabel} game=${dateId}`;
+    if (cache.get(bsKey)) {
+      skipCount++;
+      console.log(`  [skip] box_score   ${dateId} vs ${opponent}`);
+    } else {
+      console.log(`  [fetch] box_score   ${dateId} vs ${opponent}...`);
+      try {
+        const page = await getPage();
+        const result = await scrapeBoxScore(page, session!, config.teamId, (sv) => { session = sv; }, dateId, seasonArg);
+        if (result) {
+          cache.set(bsKey, bsLabel, result, TTL.GAME_PERMANENT);
+          fetchCount++;
+          console.log(`  [done]  box_score   ${dateId} vs ${opponent}`);
+        } else {
+          console.log(`  [warn]  box_score   ${dateId} vs ${opponent} — null result`);
+        }
+      } catch (err) {
+        console.error(`  [error] box_score   ${dateId} vs ${opponent}: ${err instanceof Error ? err.message : err}`);
+      }
+    }
+  }
+
+  // ── Step 3: season-level aggregates ──────────────────────────────────────
+  console.log('\n  Warming season aggregates...');
+
+  const tsKey   = `get_team_stats|${seasonLabel}`;
+  const tsLabel = `get_team_stats season=${seasonLabel}`;
+  if (cache.get(tsKey)) {
+    console.log('  [skip] team_stats — already cached');
+  } else {
+    console.log('  [fetch] team_stats...');
+    try {
+      const { page, session: s } = await ensureAuthenticated(session, config);
+      session = s;
+      const stats = await scrapeTeamStats(page, session!, config.teamId, (sv) => { session = sv; }, seasonArg);
+      cache.set(tsKey, tsLabel, stats, aggTTL);
+      fetchCount++;
+      console.log('  [done]  team_stats');
+    } catch (err) {
+      console.error(`  [error] team_stats: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+
+  const psKey   = `get_player_stats|${seasonLabel}|ALL`;
+  const psLabel = `get_player_stats season=${seasonLabel} filter=ALL`;
+  if (cache.get(psKey)) {
+    console.log('  [skip] player_stats — already cached');
+  } else {
+    console.log('  [fetch] player_stats...');
+    try {
+      const { page, session: s } = await ensureAuthenticated(session, config);
+      session = s;
+      const players = await scrapePlayerStats(page, session!, config.teamId, (sv) => { session = sv; }, undefined, seasonArg);
+      cache.set(psKey, psLabel, players, aggTTL);
+      fetchCount++;
+      console.log('  [done]  player_stats');
+    } catch (err) {
+      console.error(`  [error] player_stats: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+
+  console.log('\n' + hr('─'));
+  console.log(`  Warm complete — fetched: ${fetchCount}, skipped (already cached): ${skipCount}`);
+  console.log(hr('─'));
+
+  return session!;
+}
+
 // ── Menu ──────────────────────────────────────────────────────────────────────
 
 function printMenu(): void {
@@ -393,6 +632,12 @@ function printMenu(): void {
   console.log('    5.  get_game_stats        [optional: season, game]');
   console.log('    6.  get_box_score         [optional: season, game or "season"]');
   console.log(hr('─'));
+  console.log('  Cache:');
+  console.log('    c.  List all cache entries');
+  console.log('    ci. Inspect a cache entry (shows full JSON payload)');
+  console.log('    cc. Clear cache (all, by season, or by keyword)');
+  console.log('    w.  Warm season (bulk-cache all games for a season)');
+  console.log(hr('─'));
   console.log('  Diagnostics:');
   console.log('    t.  Run all tools (smoke test)');
   console.log(hr('─'));
@@ -404,6 +649,8 @@ function printMenu(): void {
 
 async function main(): Promise<void> {
   const config = loadConfig();
+  cache = new DataCache(process.env.HUDL_CACHE_DIR);
+  console.log(`  Cache dir: ${cache.getDir()}`);
   let session: SessionState | null = loadSession();
 
   console.log('\n' + hr('═'));
@@ -457,6 +704,23 @@ async function main(): Promise<void> {
           session = await toolGetBoxScore(session, config, g || 'latest', s || undefined);
           break;
         }
+
+        case 'c':
+          printCacheList(cache.listAll());
+          break;
+
+        case 'ci':
+          await cacheInspect();
+          break;
+
+        case 'cc':
+          await cacheClear();
+          break;
+
+        case 'w':
+        case 'W':
+          session = await warmSeason(session, config);
+          break;
 
         case 't':
         case 'T':

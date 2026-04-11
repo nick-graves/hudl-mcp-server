@@ -1,5 +1,5 @@
 # Hudl MCP Server — Progress Report
-_Last updated: March 22, 2026_
+_Last updated: April 11, 2026_
 
 ## What This Project Is
 
@@ -9,22 +9,25 @@ An MCP (Model Context Protocol) server that connects Claude Desktop to a Hudl te
 
 ## Current Status
 
-The MCP server is **feature complete** for its current scope. All 6 tools are working and stable. The repo has been cleaned up and is published at [nick-graves/hudl-mcp-server](https://github.com/nick-graves/hudl-mcp-server).
+The MCP server is **feature complete** for its current scope. All 8 tools are working and stable. The repo is published at [nick-graves/hudl-mcp-server](https://github.com/nick-graves/hudl-mcp-server).
 
 ---
 
-## MCP Tools (6 total)
+## MCP Tools (8 total)
 
 | Tool | Status | Method |
 |------|--------|--------|
 | `get_roster` | ✅ Working | Scrapes ReactVirtualized table on the team manage page with virtual scroll handling |
 | `get_game_results` | ✅ Working | Scrapes team timeline page; season-aware |
 | `get_player_stats` | ✅ Working | Navigates to reports page, intercepts client-side CSV export in memory, parses all stat sections |
-| `get_team_stats` | ✅ Working | Same CSV interception approach as player stats |
+| `get_team_stats` | ✅ Working | Same CSV interception approach as player stats; extended with GB, saves, FO%, TOs, clears, blocks, man-up, possession |
 | `list_seasons` | ✅ Working | Dynamically discovers all available seasons via Hudl API |
 | `get_game_stats` | ✅ Working | Per-game player stats for any specific game; fuzzy opponent name matching + date-based alignment |
+| `get_box_score` | ✅ Working | Team-level box score comparison (AHS vs opponent); single-game totals or season aggregates |
+| `clear_cache` | ✅ Working | Invalidate cache entries — all, by season label, or by game identifier |
 
 All tools accept an optional `season` parameter for historical queries.
+All tools accept an optional `refresh: true` parameter to bypass cache.
 
 ---
 
@@ -57,8 +60,22 @@ Rather than scraping DOM elements (which is fragile), the stats tools:
 ### Single-Game Stats
 `get_game_stats` returns full player-level stats for any specific game. Games are identified by opponent name (fuzzy matched), date string, or 0-based index. Date-based alignment is used to correctly match game IDs across the Hudl API and reports endpoints.
 
-### CLI Test Harness
-A standalone CLI (`npm run cli`) with an interactive menu to test each tool without going through Claude Desktop. Output is formatted as tables in the terminal.
+### Transparent JSON Cache Layer
+All tool results are cached to `.cache/` using SHA1-keyed JSON files:
+- **Completed games** (`get_game_stats`, `get_box_score` by opponent/date): `GAME_PERMANENT` TTL — never expire
+- **Prior completed seasons** (warmed via CLI): `SEASON_PERMANENT` TTL — never expire
+- **Current season aggregates** (`get_team_stats`, `get_player_stats`): `SEASON_24H` TTL — refresh daily
+- **All tools** accept `refresh: true` to bypass cache and re-fetch from Hudl
+- `HUDL_CACHE_DIR` env var sets a stable absolute cache path (prevents fragmentation when CLI is run from different directories)
+
+### CLI
+A standalone CLI (`npm run cli`) with a full interactive menu:
+- **Tools 1–6**: call each MCP tool directly, inspect raw JSON response
+- **`c`**: list all cache entries with age and TTL
+- **`ci`**: inspect a cache entry — full JSON payload
+- **`cc`**: clear cache — all, by season label, or by keyword
+- **`w` (warm)**: bulk-fetch and permanently cache all game stats and box scores for a season — key tool for backfilling prior seasons after a fresh install
+- **`t`**: smoke test all tools
 
 ---
 

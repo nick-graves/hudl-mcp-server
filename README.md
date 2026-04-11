@@ -36,8 +36,11 @@ Claude Desktop  →  MCP Tools  →  Hudl (via Playwright)
 | `get_player_stats` | Full player stat export — goals, assists, shots, faceoffs, turnovers, saves, and more |
 | `get_team_stats` | Aggregated team stats — record, goals scored/allowed, win % |
 | `get_game_stats` | Per-game player stats for a single specific game |
+| `get_box_score` | Team-level box score comparison (AHS vs opponent) for a single game or full season |
+| `clear_cache` | Invalidate cached data — all, by season label, or by game |
 
 All tools accept an optional `season` parameter to query historical seasons.
+All tools accept an optional `refresh: true` parameter to bypass cache and re-fetch from Hudl.
 
 ---
 
@@ -86,9 +89,14 @@ Copy `.env.example` to `.env` and fill in your credentials:
 HUDL_EMAIL=your@email.com
 HUDL_PASSWORD=yourpassword
 HUDL_TEAM_ID=your_team_id
+HUDL_CACHE_DIR=C:/Users/<you>/hudl-mcp-server/.cache
 ```
 
 To find your `HUDL_TEAM_ID`, navigate to your team page in Hudl — it's in the URL.
+
+`HUDL_CACHE_DIR` should be an absolute path. Setting it explicitly ensures the cache
+is always written to the same location regardless of what directory the process is
+launched from.
 
 ### 3. Build
 
@@ -117,13 +125,35 @@ Restart Claude Desktop. The Hudl tools will be available in your next conversati
 
 ## Testing Without Claude Desktop
 
-A CLI test harness lets you exercise each tool directly from the terminal:
+A CLI lets you exercise each tool directly from the terminal:
 
 ```bash
 npm run cli
 ```
 
-This opens an interactive menu to call each tool and inspect the raw JSON response — useful for verifying your setup before connecting Claude Desktop.
+Interactive menu options:
+
+| Key | Action |
+|-----|--------|
+| `1–6` | Call each MCP tool directly and inspect the raw JSON response |
+| `c` | List all cache entries (key, age, TTL) |
+| `ci` | Inspect a cache entry — select by number, view full JSON payload |
+| `cc` | Clear cache — all entries, by season label, or by keyword |
+| `w` | **Warm season** — bulk-fetch and permanently cache all game stats and box scores for a season |
+| `t` | Smoke test — run all tools and report pass/fail |
+
+### Warming the cache for prior seasons
+
+After a fresh install (or account switch), run the warm command to pre-populate
+the cache for completed prior seasons. This avoids re-fetching 30+ games every
+time you run a report:
+
+```
+npm run cli → w → enter "2024-2025" → y (prior/completed)
+npm run cli → w → enter "2023-2024" → y (prior/completed)
+```
+
+Takes ~10 minutes per season on first run. Subsequent runs skip already-cached entries.
 
 ---
 

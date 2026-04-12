@@ -23,6 +23,50 @@ export function createServer(config: HudlConfig): McpServer {
   // Data cache — persists across restarts in .cache/ directory
   const cache = new DataCache(process.env.HUDL_CACHE_DIR);
 
+  /**
+   * Determine whether a caller-supplied season string refers to the current
+   * (still-accumulating) season or a completed prior season.
+   *
+   * Strategy:
+   *   1. If no season was supplied, it is definitely the current season.
+   *   2. Try to read the cached season list (key: list_seasons|<teamId>).
+   *      The list is sorted newest-first, so index 0 is always current.
+   *   3. Compare the supplied value against the current season's label
+   *      (e.g. "2025-2026 Season") using startsWith, so both "2025-2026"
+   *      and "2025-2026 Season" match, as well as the raw numeric seasonId.
+   *   4. If the season list is not cached yet, fall back to treating the
+   *      season as current (safe: applies the shorter 24 h TTL rather than
+   *      permanently caching data that may still be changing).
+   *
+   * Returns true when the season is prior/completed (use GAME_PERMANENT),
+   * false when it is the current season (use SEASON_24H).
+   */
+  function isPriorSeason(season: string | undefined): boolean {
+    if (!season) return false; // no season arg → current season
+
+    const seasonsCacheKey = `list_seasons|${config.teamId}`;
+    const seasons = cache.get<Array<{ seasonId: string; label: string; seasonYear: number }>>(seasonsCacheKey);
+
+    if (!seasons || seasons.length === 0) {
+      // Season list not cached — cannot determine; assume current (safe fallback)
+      console.error(`[ttl] Season list not cached — treating season="${season}" as current`);
+      return false;
+    }
+
+    const current = seasons[0]; // newest-first → index 0 is current
+    const matchesCurrent =
+      current.label.startsWith(season) ||   // "2025-2026" matches "2025-2026 Season"
+      current.seasonId === season;           // numeric ID match
+
+    if (!matchesCurrent) {
+      console.error(`[ttl] season="${season}" is a prior season — using PERMANENT cache`);
+    } else {
+      console.error(`[ttl] season="${season}" matches current season "${current.label}" — using 24 h cache`);
+    }
+
+    return !matchesCurrent;
+  }
+
   const server = new McpServer(
     { name: 'hudl-mcp-server', version: '1.0.0' },
     {
@@ -69,7 +113,10 @@ export function createServer(config: HudlConfig): McpServer {
 
       const page  = await authenticate();
       const stats = await scrapeTeamStats(page, session!, config.teamId, onSessionUpdate, season);
-      cache.set(cacheKey, label, stats, TTL.SEASON_24H);
+      // Prior/completed seasons are immutable — cache permanently.
+      // Current season (no explicit season arg, or current season label) accumulates — refresh daily.
+      const teamStatsTtl = isPriorSeason(season) ? TTL.GAME_PERMANENT : TTL.SEASON_24H;
+      cache.set(cacheKey, label, stats, teamStatsTtl);
 
       return { content: [{ type: 'text', text: JSON.stringify(stats, null, 2) }] };
     }
@@ -111,7 +158,10 @@ export function createServer(config: HudlConfig): McpServer {
       const players = await scrapePlayerStats(
         page, session!, config.teamId, onSessionUpdate, playerName, season
       );
-      cache.set(cacheKey, label, players, TTL.SEASON_24H);
+      // Prior/completed seasons are immutable — cache permanently.
+      // Current season (no explicit season arg, or current season label) accumulates — refresh daily.
+      const playerStatsTtl = isPriorSeason(season) ? TTL.GAME_PERMANENT : TTL.SEASON_24H;
+      cache.set(cacheKey, label, players, playerStatsTtl);
 
       return { content: [{ type: 'text', text: JSON.stringify(players, null, 2) }] };
     }
@@ -154,7 +204,10 @@ export function createServer(config: HudlConfig): McpServer {
       const games = await scrapeGameResults(
         page, session!, config.teamId, onSessionUpdate, limit, season
       );
-      cache.set(cacheKey, label, games, TTL.SEASON_24H);
+      // Prior/completed seasons are immutable — cache permanently.
+      // Current season (no explicit season arg, or current season label) accumulates — refresh daily.
+      const gameResultsTtl = isPriorSeason(season) ? TTL.GAME_PERMANENT : TTL.SEASON_24H;
+      cache.set(cacheKey, label, games, gameResultsTtl);
 
       return { content: [{ type: 'text', text: JSON.stringify(games, null, 2) }] };
     }

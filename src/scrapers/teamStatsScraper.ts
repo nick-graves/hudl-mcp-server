@@ -204,10 +204,10 @@ function parseTeamStatsFromText(
     clears:         clears        || undefined,
     clearAttempts:  clearAttempts || undefined,
     clearPct:       clearPct      || undefined,
+    assists:        assists        || undefined,
     rides:          rides         || undefined,
     rideAttempts:   rideAttempts  || undefined,
     ridePct:        ridePct       || undefined,
-    raw: { assists, _pageLines: lines },
   };
 }
 

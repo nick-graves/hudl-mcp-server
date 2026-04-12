@@ -44,6 +44,7 @@ export interface TeamStats {
   games: number;
   winPercentage: number;
   // Extended stats — present when extractable from the Hudl stats page
+  assists?: number;
   shots?: number;
   shotsOnTarget?: number;
   shotPercentage?: string;
@@ -151,7 +152,5 @@ export interface BoxScoreResult {
   periodScores: PeriodScore[];
   // Team-level comparison rows from the "Team Stats" section
   categories: BoxScoreCategory[];
-  // Raw page text — retained for diagnostics
-  rawText: string;
 }
 

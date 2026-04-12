@@ -115,7 +115,6 @@ export async function scrapeBoxScore(
     opponentAbbr:  parsed.opponentAbbr || undefined,
     periodScores:  parsed.periodScores,
     categories:    parsed.categories,
-    rawText,
   };
 }
 
@@ -183,7 +182,6 @@ async function scrapeGameBoxScoreByIndex(
     opponentAbbr:  parsed.opponentAbbr || undefined,
     periodScores:  parsed.periodScores,
     categories:    parsed.categories,
-    rawText,
   };
 }
 
@@ -209,7 +207,6 @@ async function scrapeSeasonBoxScore(
     opponentAbbr:  parsed.opponentAbbr || undefined,
     periodScores:  parsed.periodScores,
     categories:    parsed.categories,
-    rawText,
   };
 }
 
